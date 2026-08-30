@@ -59,7 +59,7 @@ export function resolvePnpmInvocation(
   platform: NodeJS.Platform,
   npmExecPath: string | undefined,
   nodeExecutable = process.execPath,
-  pnpmHome = process.env.PNPM_HOME,
+  pnpmHome?: string,
 ): PnpmInvocation {
   if (npmExecPath !== undefined) {
     const pathImplementation = platform === 'win32' ? path.win32 : path.posix;
