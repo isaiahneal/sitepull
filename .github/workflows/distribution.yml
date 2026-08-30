@@ -1,0 +1,142 @@
+name: Desktop distributions
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-distributions-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  make:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS
+            os: macos-15
+            command: make:mac
+            artifact: sitepull-macos
+          - name: Linux
+            os: ubuntu-24.04
+            command: make:linux
+            artifact: sitepull-linux
+          - name: Windows
+            os: windows-2022
+            command: make:windows
+            artifact: sitepull-windows
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Install pnpm and Node.js
+        uses: pnpm/setup@v2
+        with:
+          version: 11.24.0
+          runtime: node@24.20.0
+          cache: true
+          install: false
+
+      - name: Install Linux maker prerequisites
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install --yes fakeroot rpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build native distributions
+        run: pnpm run ${{ matrix.command }}
+
+      - name: Upload native artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.artifact }}-${{ runner.arch }}
+          path: apps/desktop/out/make/**/*
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
+  release:
+    name: Publish GitHub release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: make
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - name: Check out release notes
+        uses: actions/checkout@v6
+
+      - name: Download native artifacts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: sitepull-*
+          path: native-artifacts
+
+      - name: Stage release assets and checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release-assets
+          while IFS= read -r -d '' source; do
+            filename="$(basename "$source")"
+            case "$filename" in
+              *.dmg|*.zip|*.deb|*.rpm|*Setup.exe|*.nupkg)
+                destination="release-assets/$filename"
+                ;;
+              RELEASES)
+                destination="release-assets/Sitepull-windows-RELEASES"
+                ;;
+              *)
+                continue
+                ;;
+            esac
+            if [[ -e "$destination" ]]; then
+              echo "Duplicate release asset: $filename" >&2
+              exit 1
+            fi
+            cp "$source" "$destination"
+          done < <(find native-artifacts -type f -print0)
+
+          asset_count="$(find release-assets -maxdepth 1 -type f | wc -l | tr -d ' ')"
+          if [[ "$asset_count" -lt 8 ]]; then
+            echo "Expected at least 8 native release assets, found $asset_count" >&2
+            find native-artifacts -type f -print
+            exit 1
+          fi
+
+          (
+            cd release-assets
+            find . -maxdepth 1 -type f ! -name SHA256SUMS.txt -printf '%f\0' \
+              | sort -z \
+              | xargs -0 sha256sum > SHA256SUMS.txt
+          )
+
+      - name: Publish versioned release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          notes_file="docs/release-notes/${GITHUB_REF_NAME}.md"
+          if [[ -f "$notes_file" ]]; then
+            gh release create "$GITHUB_REF_NAME" release-assets/* \
+              --verify-tag \
+              --title "Sitepull $GITHUB_REF_NAME" \
+              --notes-file "$notes_file"
+          else
+            gh release create "$GITHUB_REF_NAME" release-assets/* \
+              --verify-tag \
+              --title "Sitepull $GITHUB_REF_NAME" \
+              --generate-notes
+          fi

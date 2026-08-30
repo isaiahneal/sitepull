@@ -1,0 +1,82 @@
+{
+  "name": "sitepull",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Pull the web apart: a cross-platform desktop utility and CLI for browser-delivered design references.",
+  "author": "Isaiah Neal",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/isaiahneal/sitepull.git"
+  },
+  "homepage": "https://github.com/isaiahneal/sitepull#readme",
+  "bugs": {
+    "url": "https://github.com/isaiahneal/sitepull/issues"
+  },
+  "keywords": [
+    "electron",
+    "playwright",
+    "design-system",
+    "web-capture",
+    "macos",
+    "linux",
+    "windows"
+  ],
+  "packageManager": "pnpm@11.24.0",
+  "engines": {
+    "node": ">=24.0.0 <25"
+  },
+  "devEngines": {
+    "runtime": {
+      "name": "node",
+      "version": "24.20.0",
+      "onFail": "download"
+    },
+    "packageManager": {
+      "name": "pnpm",
+      "version": "11.24.0",
+      "onFail": "download"
+    }
+  },
+  "scripts": {
+    "dev": "pnpm --filter @sitepull/contracts build && pnpm --filter @sitepull/core build && pnpm --filter @sitepull/desktop start",
+    "dev:cli": "pnpm --filter @sitepull/contracts build && pnpm --filter @sitepull/core build && pnpm --filter @sitepull/cli dev",
+    "dev:fixture": "node fixtures/server.mjs",
+    "install:cli-global": "pnpm build:cli && node scripts/install-global-cli.ts",
+    "build": "pnpm -r --if-present build",
+    "build:cli": "pnpm --filter @sitepull/contracts build && pnpm --filter @sitepull/core build && pnpm --filter @sitepull/cli build",
+    "build:desktop": "pnpm --filter @sitepull/contracts build && pnpm --filter @sitepull/core build && pnpm --filter @sitepull/desktop build",
+    "package:desktop": "pnpm --filter @sitepull/contracts build && pnpm --filter @sitepull/core build && pnpm --filter @sitepull/desktop package",
+    "package:mac": "pnpm --filter @sitepull/contracts build && pnpm --filter @sitepull/core build && pnpm --filter @sitepull/desktop package:mac",
+    "package:linux": "pnpm --filter @sitepull/contracts build && pnpm --filter @sitepull/core build && pnpm --filter @sitepull/desktop package:linux",
+    "package:windows": "pnpm --filter @sitepull/contracts build && pnpm --filter @sitepull/core build && pnpm --filter @sitepull/desktop package:windows",
+    "make:desktop": "pnpm --filter @sitepull/contracts build && pnpm --filter @sitepull/core build && pnpm --filter @sitepull/desktop make",
+    "make:mac": "pnpm --filter @sitepull/contracts build && pnpm --filter @sitepull/core build && pnpm --filter @sitepull/desktop make:mac",
+    "make:linux": "pnpm --filter @sitepull/contracts build && pnpm --filter @sitepull/core build && pnpm --filter @sitepull/desktop make:linux",
+    "make:windows": "pnpm --filter @sitepull/contracts build && pnpm --filter @sitepull/core build && pnpm --filter @sitepull/desktop make:windows",
+    "typecheck": "tsc -p tsconfig.json --noEmit && pnpm -r --if-present typecheck",
+    "lint": "eslint . --max-warnings 0",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:integration": "vitest run tests/integration",
+    "install:browsers": "playwright install webkit"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@types/node": "^24.10.1",
+    "eslint": "10.9.1",
+    "eslint-plugin-react-hooks": "7.1.1",
+    "eslint-plugin-react-refresh": "0.5.5",
+    "globals": "17.4.0",
+    "prettier": "3.9.6",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.68.0",
+    "vitest": "4.1.11"
+  },
+  "dependencies": {
+    "@sitepull/cli": "link:apps/cli"
+  }
+}

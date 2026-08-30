@@ -1,0 +1,228 @@
+@import 'tailwindcss';
+
+@theme {
+  --font-sans: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Inter', 'Segoe UI', sans-serif;
+  --font-mono: 'SFMono-Regular', 'SF Mono', ui-monospace, Menlo, Monaco, Consolas, monospace;
+  --color-zinc-250: #dedee2;
+  --color-zinc-350: #b8b8c0;
+  --color-zinc-450: #94949e;
+  --color-zinc-550: #71717c;
+  --color-zinc-650: #54545e;
+  --color-zinc-750: #37373f;
+}
+
+:root {
+  color-scheme: dark;
+  font-family: var(--font-sans);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  --app-bg: #090a0d;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  min-height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: var(--app-bg);
+}
+
+body {
+  user-select: none;
+}
+
+input,
+textarea,
+pre,
+code,
+[data-selectable='true'] {
+  user-select: text;
+}
+
+button,
+input,
+select {
+  font: inherit;
+}
+
+button {
+  cursor: default;
+}
+
+::selection {
+  color: #f4f4f5;
+  background: rgb(59 130 246 / 35%);
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  min-height: 34px;
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background: rgb(255 255 255 / 12%);
+  background-clip: content-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgb(255 255 255 / 19%);
+  background-clip: content-box;
+}
+
+.app-drag-region {
+  -webkit-app-region: drag;
+}
+
+.no-drag,
+.app-drag-region button,
+.app-drag-region a,
+.app-drag-region input {
+  -webkit-app-region: no-drag;
+}
+
+.collapsible-panel {
+  height: var(--collapsible-panel-height);
+  opacity: 1;
+  transition:
+    height 200ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 160ms ease;
+}
+
+.collapsible-panel[data-starting-style],
+.collapsible-panel[data-ending-style] {
+  height: 0;
+  opacity: 0;
+}
+
+.settings-trigger[data-panel-open] .settings-chevron,
+.log-trigger[data-panel-open] .log-chevron,
+.file-tree-trigger[data-panel-open] .file-tree-chevron,
+.log-row-trigger[data-panel-open] .log-row-chevron {
+  transform: rotate(90deg);
+}
+
+.capture-pulse {
+  animation: capture-pulse 1.8s ease-out infinite;
+}
+
+.progress-indeterminate {
+  animation: progress-indeterminate 1.4s ease-in-out infinite;
+}
+
+.skeleton {
+  background: linear-gradient(
+    90deg,
+    rgb(255 255 255 / 3%),
+    rgb(255 255 255 / 7%),
+    rgb(255 255 255 / 3%)
+  );
+  background-size: 220% 100%;
+  animation: skeleton-shimmer 1.6s ease-in-out infinite;
+}
+
+.dialog-backdrop {
+  opacity: 1;
+  transition: opacity 180ms ease;
+}
+
+.dialog-popup {
+  transform: translateY(0) scale(1);
+  opacity: 1;
+  transition:
+    transform 190ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 150ms ease;
+}
+
+.dialog-backdrop[data-starting-style],
+.dialog-backdrop[data-ending-style] {
+  opacity: 0;
+}
+
+.dialog-popup[data-starting-style],
+.dialog-popup[data-ending-style] {
+  transform: translateY(7px) scale(0.985);
+  opacity: 0;
+}
+
+.workspace-tab[data-selected]::after {
+  position: absolute;
+  right: 12px;
+  bottom: -1px;
+  left: 12px;
+  height: 1px;
+  content: '';
+  background: #60a5fa;
+}
+
+.workspace-tab-indicator {
+  display: none;
+}
+
+.animate-in {
+  animation: toast-in 180ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@keyframes capture-pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgb(96 165 250 / 36%);
+  }
+  70%,
+  100% {
+    box-shadow: 0 0 0 6px rgb(96 165 250 / 0%);
+  }
+}
+
+@keyframes progress-indeterminate {
+  0% {
+    transform: translateX(-110%);
+  }
+  55%,
+  100% {
+    transform: translateX(330%);
+  }
+}
+
+@keyframes skeleton-shimmer {
+  0% {
+    background-position: 100% 0;
+  }
+  100% {
+    background-position: -100% 0;
+  }
+}
+
+@keyframes toast-in {
+  from {
+    transform: translate(-50%, 8px);
+    opacity: 0;
+  }
+  to {
+    transform: translate(-50%, 0);
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

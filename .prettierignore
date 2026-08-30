@@ -1,0 +1,8 @@
+node_modules
+dist
+.vite
+out
+coverage
+output
+pnpm-lock.yaml
+fixtures/site/public

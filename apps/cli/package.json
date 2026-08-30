@@ -1,0 +1,35 @@
+{
+  "name": "@sitepull/cli",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "sitepull": "./dist/bin.js"
+  },
+  "exports": {
+    ".": "./dist/bin.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup src/bin.ts --format esm --platform node --target node24 --sourcemap --clean",
+    "dev": "tsup src/bin.ts --format esm --platform node --target node24 --sourcemap --watch",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --root ../.. apps/cli/src"
+  },
+  "dependencies": {
+    "@sitepull/contracts": "workspace:*",
+    "@sitepull/core": "workspace:*",
+    "cac": "7.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "tsup": "8.5.1",
+    "typescript": "6.0.3",
+    "vitest": "4.1.11"
+  },
+  "engines": {
+    "node": ">=24.0.0"
+  }
+}

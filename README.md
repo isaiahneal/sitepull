@@ -1,0 +1,270 @@
+# Sitepull
+
+[![Quality](https://github.com/isaiahneal/sitepull/actions/workflows/quality.yml/badge.svg)](https://github.com/isaiahneal/sitepull/actions/workflows/quality.yml)
+[![Distribution](https://github.com/isaiahneal/sitepull/actions/workflows/distribution.yml/badge.svg)](https://github.com/isaiahneal/sitepull/actions/workflows/distribution.yml)
+[![Release](https://img.shields.io/github/v/release/isaiahneal/sitepull)](https://github.com/isaiahneal/sitepull/releases/latest)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
+**Pull the web apart.** Sitepull is a desktop utility and headless CLI for macOS, Linux, and Windows. Give it a public website, and it uses a real browser to render the delivered implementation, crawl permitted routes, capture visual evidence, infer the design system, and produce an inspectable reference project for people and coding agents.
+
+The output combines rendered HTML, semantic DOM summaries, delivered resources, responsive screenshots, computed design tokens, repeated component candidates, and a concise `AI_CONTEXT.md`. Export a compact AI Pack for ChatGPT, Codex, Claude, or another coding agent, or retain the Full Capture for deeper inspection.
+
+> Sitepull captures and analyzes content delivered to a browser. It does not magically recover a website's private/original source repository.
+
+![Sitepull desktop interface](docs/sitepull-desktop.png)
+
+## Highlights
+
+- Hydrated, rendered HTML and visible semantic elements with reconstruction-focused computed styles
+- Bounded breadth-first route crawling from the rendered DOM, with same-origin enforcement and recorded skip reasons
+- Desktop and mobile viewport/full-page screenshots, plus an optional tablet preset
+- Browser-delivered HTML, CSS, JavaScript, images, SVG, fonts, JSON, manifests, and icons
+- SHA-256 asset deduplication with source URLs, status, size, local path, and referencing pages
+- Evidence-backed color, typography, spacing, radius, shadow, breakpoint, and CSS-variable analysis
+- Deterministic repeated DOM/style signatures surfaced as inferred component candidates
+- AI Pack and Full Capture ZIP exports from both the desktop app and the shared core engine
+- A native desktop inspector with Overview, Pages, Design, Components, Assets, Files, and Logs workspaces
+- A first-class, script-friendly CLI that is headless by default
+
+WebKit is the default and bundled desktop rendering engine. Chromium and Firefox are optional for CLI/source-development captures when their Playwright browser packages are installed.
+
+## Get Sitepull
+
+Desktop packages are published on the [GitHub Releases page](https://github.com/isaiahneal/sitepull/releases):
+
+- macOS arm64: DMG and ZIP
+- Linux x64: DEB, RPM, and ZIP
+- Windows x64: Squirrel Setup executable and ZIP
+
+Each desktop package contains its own Playwright WebKit runtime. Release artifacts are built on their matching operating system so the embedded browser is native to that platform.
+
+The community `v0.1.0` artifacts are not backed by Apple Developer ID, Microsoft Authenticode, or Linux repository signing. See [Distribution trust](#distribution-trust) before installing a release artifact.
+
+## Requirements
+
+Packaged desktop builds include Node/Electron and the matching Playwright WebKit runtime. Source development requires:
+
+- Node.js `24.20.0` (current LTS line used by this release)
+- pnpm `11.24.0`
+- A supported macOS, Ubuntu/Debian-compatible Linux, Fedora/RPM-compatible Linux, or Windows host
+- Xcode Command Line Tools for local macOS DMG creation
+- `fakeroot` and RPM tooling for local Linux makers
+
+Chromium and Firefox are optional CLI/development engines and require their corresponding Playwright browser packages.
+
+## Installation from source
+
+Sitepull development uses Node.js 24 LTS and pnpm 11:
+
+```bash
+git clone https://github.com/isaiahneal/sitepull.git
+cd sitepull
+corepack enable
+pnpm install
+pnpm install:browsers
+```
+
+Launch the desktop app:
+
+```bash
+pnpm dev
+```
+
+Build and install the global CLI command:
+
+```bash
+pnpm install:cli-global
+sitepull --version
+```
+
+On macOS and Linux, the installer creates an idempotent link at `~/.local/bin/sitepull`. On Windows, it creates an idempotent `sitepull.cmd` launcher in `%LOCALAPPDATA%\Microsoft\WindowsApps`, which is normally already on the per-user `PATH`. It refuses to overwrite unrelated commands and reports if the selected directory is missing from `PATH`; `SITEPULL_BIN_DIR` can select another command directory. Once that directory is on the shell path, `sitepull` is available in macOS Terminal, Ghostty, PowerShell, Windows Terminal, and other new shells without a repository-relative path.
+
+## Intelligent URL input
+
+You can enter or pass a bare host:
+
+```bash
+sitepull pull example.com
+```
+
+For a bare host, Sitepull infers HTTPS and tests it first. It retries over HTTP only when that inferred HTTPS transport fails. An explicitly supplied `https://` URL is never silently downgraded. The final resolved URL is recorded in capture metadata.
+
+The desktop input follows the same rule.
+
+## CLI
+
+Typical capture:
+
+```bash
+sitepull pull example.com --ai-pack --zip
+```
+
+Explicit headless automation:
+
+```bash
+sitepull pull example.com \
+  --headless \
+  --output ./reference \
+  --depth 2 \
+  --max-pages 25 \
+  --engine webkit \
+  --viewports desktop,mobile \
+  --ai-pack \
+  --zip
+```
+
+Headless is the default. Use `--headed` when you intentionally want to watch the Playwright browser; `--headless` and `--headed` are mutually exclusive.
+
+Available options:
+
+| Option                     | Purpose                                               |
+| -------------------------- | ----------------------------------------------------- |
+| `-o, --output <directory>` | Output parent; defaults to `~/Sitepull`               |
+| `-d, --depth <number>`     | Maximum route depth; defaults to `2`                  |
+| `-p, --max-pages <number>` | Maximum pages; defaults to `25`                       |
+| `--engine <engine>`        | `webkit`, `chromium`, or `firefox`                    |
+| `--viewports <presets>`    | Comma-separated `desktop,mobile,tablet` presets       |
+| `--include-subdomains`     | Permit subdomains of the source host                  |
+| `--headless`               | Explicitly run without a visible browser; the default |
+| `--headed`                 | Show the Playwright browser                           |
+| `--timeout <seconds>`      | Per-page timeout; defaults to `30`                    |
+| `--zip`                    | Export a ZIP after capture                            |
+| `--ai-pack`                | With `--zip`, export the compact AI Pack              |
+| `--quiet`                  | Emit only the final artifact path                     |
+
+Run `sitepull --help` for the complete command reference. Progress and summaries go to stderr while the final artifact path goes to stdout, making quiet mode suitable for scripts. Exit codes are `0` for success, `1` for capture failure, `2` for invalid usage, and `130` for cancellation.
+
+## Desktop workflow
+
+Run `pnpm dev`, enter a host or URL, adjust Advanced Settings if needed, and choose **Pull Site**. Sitepull reports real stage and counter events from the core engine rather than a simulated percentage. Cancellation stops the crawl and closes Playwright resources.
+
+The default desktop output parent is the platform Documents directory under `Sitepull`. A native folder picker can authorize another parent. Completed captures can be inspected across:
+
+- **Overview** — screenshots, palette, typography, routes, candidates, and export estimates
+- **Pages** — route browser with desktop/mobile and viewport/full-page toggles
+- **Design** — colors, type, spacing, radii, shadows, and CSS variables
+- **Components** — inferred repeated patterns with confidence and evidence
+- **Assets** — categorized and filterable delivered resources
+- **Files** — bounded, read-only project tree and text preview
+- **Logs** — structured capture events and persisted logs
+
+Recents are stored in the operating system's application-support directory. Missing or externally deleted captures degrade gracefully.
+
+## Architecture
+
+```text
+sitepull/
+├── apps/
+│   ├── desktop/       Electron Forge + React/Vite desktop application
+│   └── cli/           CAC-based `sitepull` command
+├── packages/
+│   ├── core/          Browser crawl, capture, analysis, project, and ZIP engine
+│   └── contracts/     Shared strict Zod schemas and TypeScript contracts
+├── fixtures/          Deterministic hydrated fixture website
+└── tests/integration/ End-to-end browser crawl assertions
+```
+
+Both frontends invoke the same `@sitepull/core` engine. The core package has no Electron or React dependency. The Electron main process owns captures and filesystem access; the sandboxed renderer communicates through a narrow, contract-validated preload bridge.
+
+## Capture output
+
+Successful runs finalize atomically into a timestamped directory:
+
+```text
+example.com-2026-08-30T20-56-54Z-357710/
+├── README.md
+├── AI_CONTEXT.md
+├── sitepull.json
+├── manifest.json
+├── pages/
+│   └── home/
+│       ├── rendered.html
+│       ├── document.json
+│       ├── elements.json
+│       ├── links.json
+│       ├── network.json
+│       └── screenshots/
+├── design/
+├── assets/
+├── raw/
+└── logs/
+```
+
+Downloaded compiled JavaScript remains under `raw/javascript`; Sitepull never presents it as an original framework source tree. Explicitly referenced source maps may be captured. Sitepull does not guess hidden `.map` paths.
+
+## AI Pack and Full Capture
+
+**AI Pack** is a deliberately compact evidence set containing `AI_CONTEXT.md`, manifests, design analysis, rendered HTML, useful DOM summaries, screenshots, and selected visual assets. It excludes minified bundles, raw fonts, duplicate binaries, and verbose network logs.
+
+**Full Capture** preserves every successfully captured project file, including raw delivered resources and structured logs. The AI Pack uses an explicit file allowlist; both modes estimate compressed size before export and create ZIPs without following links outside the capture root.
+
+## Security model
+
+Crawled websites are hostile input.
+
+- Only the isolated Playwright browser executes target-site JavaScript. Captured code is never loaded into Sitepull's renderer.
+- Electron uses `nodeIntegration: false`, context isolation, a sandboxed renderer, web security, restrictive CSP, disabled permissions, and denied webviews/navigation.
+- The preload bridge exposes only typed Sitepull operations. Every IPC request/result is parsed with shared Zod contracts, and each sender is matched to the trusted main frame.
+- The renderer cannot select arbitrary paths or invoke shell commands. Output parents are the default directory or explicitly authorized through a native picker.
+- Canonical path containment rejects traversal and symbolic-link escapes. Text previews, project trees, and screenshot delivery are size-bounded.
+- PNG screenshots are checked for valid dimensions and decoded-pixel limits both after capture and before renderer delivery.
+- HTTP(S) requests are checked against resolved IP addresses. Loopback, private, link-local, multicast, and other non-public destinations are rejected in normal desktop and CLI captures.
+- Crawling is same-origin by default. Subdomains require opt-in; authentication, CAPTCHA, paywall, and access-control bypasses are intentionally out of scope.
+
+See [SECURITY.md](SECURITY.md) for vulnerability reporting.
+
+## Development and quality gates
+
+The repository pins Node `24.20.0` and pnpm `11.24.0` in `.node-version` and `package.json`; `pnpm-lock.yaml` freezes the resolved application and tool dependency graph.
+
+```bash
+pnpm typecheck
+pnpm lint
+pnpm format:check
+pnpm test
+pnpm test:integration
+pnpm build:cli
+pnpm build:desktop
+```
+
+The deterministic fixture exercises hydrated SPA routes, lazy content, query bounding, origin enforcement, repeated cards, responsive CSS, variables, local fonts, SVG and duplicate raster resources, source maps, screenshots, project generation, AI filtering, HTTP fallback, and cancellation cleanup.
+
+## Packaging
+
+Install the workspace dependencies first. Packaging downloads an app-local WebKit bundle and embeds it in the desktop artifact.
+
+```bash
+# Unpacked application for the current platform
+pnpm package:desktop
+
+# Native distributables
+pnpm make:mac
+pnpm make:linux
+pnpm make:windows
+```
+
+Platform-specific unpacked builds are also available through `pnpm package:mac`, `pnpm package:linux`, and `pnpm package:windows`. Forge writes output below `apps/desktop/out/`.
+
+Build each target on its native operating system. The repository's distribution workflow does exactly that and uploads the native artifacts for macOS, Linux, and Windows. macOS DMG creation requires Xcode Command Line Tools; Linux DEB/RPM creation requires the platform packaging tools; Windows Squirrel creation runs on Windows.
+
+## Distribution trust
+
+Electron fuses harden every package. Local macOS packages are re-signed ad hoc after fuse mutation and verified for internal signature consistency, but ad-hoc signing is not an Apple Developer ID signature and cannot be notarized. The community artifacts do not claim hardened runtime, and Sitepull does not weaken the bundle with the disable-library-validation entitlement. A hardened-runtime, notarized macOS distribution requires an Apple Developer identity and notarization credentials.
+
+Windows packages likewise require an Authenticode certificate for publisher trust, and Linux packages require a repository/package-signing workflow for signed distribution. Those private credentials are intentionally absent from this public repository and its `v0.1.0` community builds.
+
+## Known limitations
+
+- Sitepull reconstructs public browser output; it cannot recover private repositories, server templates, unshipped assets, build configuration, or backend code.
+- Cross-origin stylesheet rules can be opaque to in-page CSS inspection, although delivered stylesheets may still be captured as resources.
+- Content behind login, anti-bot controls, CAPTCHAs, paywalls, or private-network hosts is intentionally unsupported in v1.
+- Playwright WebKit is useful for Safari-adjacent behavior, but it is not the Safari application.
+- Packaged desktop builds intentionally embed only WebKit; Chromium and Firefox remain optional CLI/source-development engines.
+- Linux packages still depend on the distribution's browser/UI system libraries; the CI build covers the declared DEB/RPM targets, not every Linux distribution.
+- Resources are limited to 25 MB each. Responses without a trustworthy content length may briefly require in-memory buffering because Playwright exposes response bodies as complete buffers.
+- Component names and semantic design roles are deterministic inferences. Raw measurements, frequencies, routes, and signatures remain available for downstream judgment.
+- Official publisher signing, macOS hardened runtime, and notarization are not configured for the public `v0.1.0` artifacts.
+
+## License
+
+[MIT](LICENSE) © Isaiah Neal

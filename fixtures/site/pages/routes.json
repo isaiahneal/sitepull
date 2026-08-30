@@ -1,0 +1,88 @@
+{
+  "siteName": "Fixture Atelier",
+  "routes": [
+    {
+      "path": "/",
+      "label": "Overview",
+      "eyebrow": "Rendered, measured, remembered",
+      "title": "A small site with a deliberately rich visual system.",
+      "summary": "This deterministic local fixture combines hydrated navigation, repeated structures, responsive layout, and lazy content without contacting the public internet.",
+      "accent": "cobalt"
+    },
+    {
+      "path": "/about",
+      "label": "About",
+      "eyebrow": "A route assembled after hydration",
+      "title": "Built to reveal how modern pages actually behave.",
+      "summary": "Semantic regions, typographic levels, custom properties, and interactive affordances remain stable across every capture.",
+      "accent": "coral"
+    },
+    {
+      "path": "/work",
+      "label": "Work",
+      "eyebrow": "Repeated systems",
+      "title": "Component candidates hiding in plain sight.",
+      "summary": "The card collection repeats one structural pattern with controlled variations in content, imagery, badges, and links.",
+      "accent": "moss"
+    },
+    {
+      "path": "/work/case-study",
+      "label": "Case study",
+      "eyebrow": "Nested route",
+      "title": "One deeper page for bounded breadth-first crawling.",
+      "summary": "This nested path is served by the same shell and rendered from the current URL, just like a client-routed application.",
+      "accent": "violet"
+    },
+    {
+      "path": "/contact",
+      "label": "Contact",
+      "eyebrow": "Last same-origin route",
+      "title": "A quiet endpoint with loud implementation details.",
+      "summary": "Form controls, labels, borders, focus states, and a second layout density give the extractor more evidence to organize.",
+      "accent": "amber"
+    }
+  ],
+  "cards": [
+    {
+      "kicker": "01 · Capture",
+      "title": "Hydrated structure",
+      "copy": "Links and regions arrive after a same-origin JSON request completes.",
+      "badge": "DOM"
+    },
+    {
+      "kicker": "02 · Resolve",
+      "title": "Canonical routes",
+      "copy": "Fragments, tracking parameters, downloads, and external origins coexist.",
+      "badge": "URL"
+    },
+    {
+      "kicker": "03 · Measure",
+      "title": "Computed tokens",
+      "copy": "Spacing, color, radius, shadow, and typography use reusable CSS variables.",
+      "badge": "CSS"
+    },
+    {
+      "kicker": "04 · Compare",
+      "title": "Duplicate assets",
+      "copy": "Two raster URLs intentionally return the exact same response bytes.",
+      "badge": "SHA"
+    },
+    {
+      "kicker": "05 · Scroll",
+      "title": "Lazy evidence",
+      "copy": "An observed boundary fetches and appends a final content section once visible.",
+      "badge": "IO"
+    },
+    {
+      "kicker": "06 · Export",
+      "title": "Source references",
+      "copy": "The delivered JavaScript explicitly advertises a public source map.",
+      "badge": "MAP"
+    }
+  ],
+  "lazy": {
+    "eyebrow": "Loaded at the boundary",
+    "title": "The bottom of the page arrived only after scrolling.",
+    "copy": "This section is fetched through a same-origin JSON endpoint when its IntersectionObserver becomes visible. It should appear exactly once and expand the rendered document height."
+  }
+}

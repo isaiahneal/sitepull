@@ -1,0 +1,11 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "types": ["node", "vitest/globals"],
+    "paths": {
+      "@sitepull/contracts": ["./packages/contracts/src/index.ts"],
+      "@sitepull/core": ["./packages/core/src/index.ts"]
+    }
+  },
+  "include": ["scripts/**/*.ts", "tests/**/*.ts", "vitest.config.ts"]
+}

@@ -1,0 +1,13 @@
+node_modules/
+dist/
+.vite/
+out/
+coverage/
+output/
+*.log
+.DS_Store
+apps/desktop/.vite/
+apps/desktop/.playwright-browsers/
+apps/desktop/out/
+tests/.artifacts/
+fixtures/site/public/

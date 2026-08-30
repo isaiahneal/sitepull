@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">Sitepull</title>
+  <desc id="desc">An abstract page pulled through a precise frame.</desc>
+  <defs>
+    <linearGradient id="surface" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#252933"/>
+      <stop offset="1" stop-color="#101116"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#7aa2ff"/>
+      <stop offset="1" stop-color="#8c74ff"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="112" fill="#0b0c0f"/>
+  <rect x="52" y="52" width="408" height="408" rx="88" fill="url(#surface)" stroke="#ffffff" stroke-opacity=".1" stroke-width="4"/>
+  <path d="M166 145h180a24 24 0 0 1 24 24v116a24 24 0 0 1-24 24H238" fill="none" stroke="#dfe5f5" stroke-opacity=".84" stroke-width="24" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M289 244l-73 73 73 73" fill="none" stroke="url(#accent)" stroke-width="34" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M216 317h130" fill="none" stroke="url(#accent)" stroke-width="34" stroke-linecap="round"/>
+  <circle cx="164" cy="145" r="12" fill="#7aa2ff"/>
+</svg>

@@ -1,0 +1,30 @@
+packages:
+  - apps/*
+  - packages/*
+
+# Electron Forge must be able to resolve production dependencies from the
+# packaged application tree. pnpm 11 stores this project-level setting here.
+nodeLinker: hoisted
+
+minimumReleaseAge: 1440
+
+minimumReleaseAgeExclude:
+  - electron
+  - playwright
+  - playwright-core
+  - zod
+
+# Electron Forge 7.11.2 currently reaches @electron/node-gyp through its
+# official git dependency. pnpm 11 has no per-package exotic-subdependency
+# exception, so Forge installation requires this project-level opt-out.
+blockExoticSubdeps: false
+
+allowBuilds:
+  electron: true
+  electron-winstaller: true
+  esbuild: true
+  fs-xattr: true
+  macos-alias: true
+
+overrides:
+  '@sitepull/cli': link:apps/cli
