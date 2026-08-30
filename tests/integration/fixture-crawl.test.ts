@@ -104,7 +104,7 @@ describe('deterministic fixture crawl', () => {
           pageTimeoutMs: 15_000,
           maxElementsPerPage: 2_000,
           viewports: [
-            { name: 'desktop', width: 1_440, height: 1_000 },
+            { name: 'desktop', width: 1_440, height: 600 },
             { name: 'mobile', width: 390, height: 844 },
           ],
         },
@@ -168,7 +168,7 @@ describe('deterministic fixture crawl', () => {
     const mobile = home?.screenshots.find((screenshot) => screenshot.viewport.name === 'mobile');
     expect(
       pngDimensions(await readFile(path.join(result.outputDirectory, desktop?.viewportPath ?? ''))),
-    ).toEqual({ width: 1_440, height: 1_000 });
+    ).toEqual({ width: 1_440, height: 600 });
     expect(
       pngDimensions(await readFile(path.join(result.outputDirectory, mobile?.viewportPath ?? ''))),
     ).toEqual({ width: 390, height: 844 });

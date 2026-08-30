@@ -211,19 +211,38 @@ async function stabilizePage(
   ]).catch(() => undefined);
   await waitForNetworkQuiet(getOutstanding, timeoutMs, signal);
 
-  let previousHeight = 0;
-  let stableIterations = 0;
-  for (let iteration = 0; iteration < 14 && stableIterations < 2; iteration += 1) {
+  let previousBottomHeight = -1;
+  let stableBottomIterations = 0;
+  const scrollDeadline = Date.now() + Math.min(timeoutMs, 8_000);
+  for (
+    let iteration = 0;
+    iteration < 80 && stableBottomIterations < 2 && Date.now() < scrollDeadline;
+    iteration += 1
+  ) {
     throwIfAborted(signal);
-    const metrics = await page.evaluate(() => {
-      const height = Math.max(document.body.scrollHeight, document.documentElement.scrollHeight);
+    await page.evaluate(() => {
       window.scrollBy(0, Math.max(320, Math.floor(window.innerHeight * 0.78)));
-      return { height, y: window.scrollY, viewportHeight: window.innerHeight };
     });
-    stableIterations = metrics.height === previousHeight ? stableIterations + 1 : 0;
-    previousHeight = metrics.height;
     await abortableDelay(140, signal);
-    if (metrics.y + metrics.viewportHeight >= metrics.height) stableIterations += 1;
+
+    const metrics = await page.evaluate(() => ({
+      height: Math.max(document.body.scrollHeight, document.documentElement.scrollHeight),
+      y: window.scrollY,
+      viewportHeight: window.innerHeight,
+    }));
+    const atBottom = metrics.y + metrics.viewportHeight >= metrics.height - 1;
+    if (!atBottom) {
+      stableBottomIterations = 0;
+      continue;
+    }
+
+    await waitForNetworkQuiet(getOutstanding, Math.min(timeoutMs, 2_500), signal);
+    const settledHeight = await page.evaluate(() =>
+      Math.max(document.body.scrollHeight, document.documentElement.scrollHeight),
+    );
+    stableBottomIterations =
+      settledHeight === previousBottomHeight ? stableBottomIterations + 1 : 0;
+    previousBottomHeight = settledHeight;
   }
   await page.evaluate(() => window.scrollTo(0, 0));
   await waitForNetworkQuiet(getOutstanding, 2_500, signal);
