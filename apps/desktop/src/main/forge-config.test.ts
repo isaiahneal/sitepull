@@ -54,13 +54,27 @@ describe('Electron Forge distribution configuration', () => {
       command: 'C:\\node\\node.exe',
       prefixArgs: ['C:\\pnpm\\pnpm.cjs'],
     });
+    expect(
+      resolvePnpmInvocation(
+        'win32',
+        undefined,
+        'C:\\node\\node.exe',
+        'C:\\Users\\runneradmin\\setup-pnpm',
+      ),
+    ).toEqual({
+      command: 'C:\\Users\\runneradmin\\setup-pnpm\\pnpm.exe',
+      prefixArgs: [],
+    });
     expect(resolvePnpmInvocation('linux', undefined, '/usr/bin/node')).toEqual({
       command: 'pnpm',
       prefixArgs: [],
     });
-    expect(() => resolvePnpmInvocation('win32', undefined, 'C:\\node\\node.exe')).toThrow(
-      /npm_execpath/,
-    );
+    expect(() =>
+      resolvePnpmInvocation('win32', undefined, 'C:\\node\\node.exe', undefined),
+    ).toThrow(/npm_execpath or PNPM_HOME/);
+    expect(() =>
+      resolvePnpmInvocation('win32', undefined, 'C:\\node\\node.exe', 'relative\\pnpm'),
+    ).toThrow(/npm_execpath or PNPM_HOME/);
   });
 
   it('keeps production deployment from changing the shared workspace install', () => {

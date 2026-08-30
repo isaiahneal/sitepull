@@ -59,6 +59,7 @@ export function resolvePnpmInvocation(
   platform: NodeJS.Platform,
   npmExecPath: string | undefined,
   nodeExecutable = process.execPath,
+  pnpmHome = process.env.PNPM_HOME,
 ): PnpmInvocation {
   if (npmExecPath !== undefined) {
     const pathImplementation = platform === 'win32' ? path.win32 : path.posix;
@@ -71,8 +72,11 @@ export function resolvePnpmInvocation(
   }
 
   if (platform === 'win32') {
+    if (pnpmHome !== undefined && path.win32.isAbsolute(pnpmHome)) {
+      return { command: path.win32.join(pnpmHome, 'pnpm.exe'), prefixArgs: [] };
+    }
     throw new Error(
-      'Windows packaging must be launched through a pnpm script so npm_execpath is available.',
+      'Windows packaging requires an absolute npm_execpath or PNPM_HOME so pnpm can run without shell command parsing.',
     );
   }
   return { command: 'pnpm', prefixArgs: [] };
@@ -112,7 +116,12 @@ async function adHocResignMacApp(appPath: string): Promise<void> {
 
 async function stageProductionDependencies(buildPath: string): Promise<void> {
   const deployPath = await mkdtemp(path.join(os.tmpdir(), 'sitepull-forge-deploy-'));
-  const pnpm = resolvePnpmInvocation(process.platform, process.env.npm_execpath);
+  const pnpm = resolvePnpmInvocation(
+    process.platform,
+    process.env.npm_execpath,
+    process.execPath,
+    process.env.PNPM_HOME,
+  );
 
   try {
     await execFileAsync(pnpm.command, [...pnpm.prefixArgs, ...PRODUCTION_DEPLOY_ARGS, deployPath], {
