@@ -32,7 +32,8 @@ test "$(rpm -qp --queryformat '%{RELEASE}' "${rpm_path}")" = 1.fc44
 test "$(rpm -qp --queryformat '%{ARCH}' "${rpm_path}")" = x86_64
 expected_version="$(rpm -qp --queryformat '%{VERSION}' "${rpm_path}")"
 
-dnf install --assumeyes "${rpm_path}"
+# `runuser` is test-harness tooling, not a Sitepull runtime dependency.
+dnf install --assumeyes util-linux "${rpm_path}"
 test "$(rpm -q --queryformat '%{VERSION}' sitepull-cli)" = "${expected_version}"
 test "$(rpm -q --queryformat '%{RELEASE}' sitepull-cli)" = 1.fc44
 test "$(rpm -q --queryformat '%{ARCH}' sitepull-cli)" = x86_64
