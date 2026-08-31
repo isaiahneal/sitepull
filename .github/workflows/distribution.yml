@@ -107,7 +107,7 @@ jobs:
           SITEPULL_PACKAGE_DIRECTORY=/usr/lib/sitepull \
             pnpm --filter @sitepull/desktop smoke:packaged
 
-      - name: Clean-install and probe the Ubuntu 24.04 DEB
+      - name: Clean-install and audit the Ubuntu 24.04 DEB
         if: runner.os == 'Linux'
         shell: bash
         run: |
@@ -118,17 +118,61 @@ jobs:
             bash -euxo pipefail -c '
               export DEBIAN_FRONTEND=noninteractive
               apt-get update
-              apt-get install --yes xvfb
               deb="$(find /artifacts -type f -name "*.deb" -print -quit)"
               test -n "${deb}"
               apt-get install --yes "${deb}"
+              apt-get check
+              test "$(dpkg-query --show --showformat="\${db:Status-Abbrev}" sitepull)" = "ii "
               executable="$(readlink -f "$(command -v sitepull)")"
+              test "${executable}" = "/usr/lib/sitepull/Sitepull"
+              test -x "${executable}"
               sandbox="$(dirname "${executable}")/chrome-sandbox"
               test "$(stat --format="%u:%g:%a" "${sandbox}")" = "0:0:4755"
-              useradd --create-home sitepull-smoke
-              runuser -u sitepull-smoke -- env \
-                SITEPULL_PACKAGED_RUNTIME_SMOKE=probe-only \
-                timeout 45s xvfb-run --auto-servernum sitepull
+              browser_root="/usr/lib/sitepull/resources/.playwright-browsers"
+              mapfile -d "" -t webkit_launchers < <(
+                find "${browser_root}" -mindepth 2 -maxdepth 2 \
+                  -type f -name pw_run.sh -print0
+              )
+              test "${#webkit_launchers[@]}" -eq 1
+              test -x "${webkit_launchers[0]}"
+
+              electron_dependencies="$(ldd "${executable}")"
+              printf "%s\n" "${electron_dependencies}"
+              if grep -Fq "not found" <<< "${electron_dependencies}"; then
+                exit 1
+              fi
+
+              audit_webkit_flavor() {
+                local flavor_root="$1"
+                shift
+                local dependencies relative target
+                test -x "${flavor_root}/MiniBrowser"
+                for relative in "$@"; do
+                  target="${flavor_root}/${relative}"
+                  test -x "${target}"
+                  if ! dependencies="$(
+                    LD_LIBRARY_PATH="${flavor_root}/lib:${flavor_root}/sys/lib" \
+                      ldd "${target}" 2>&1
+                  )"; then
+                    printf "ldd failed for %s\n%s\n" "${target}" "${dependencies}" >&2
+                    return 1
+                  fi
+                  if [[ "${dependencies}" == *"not found"* ]]; then
+                    printf "Unresolved dependency for %s\n%s\n" \
+                      "${target}" "${dependencies}" >&2
+                    return 1
+                  fi
+                done
+              }
+
+              webkit_root="$(dirname "${webkit_launchers[0]}")"
+              audit_webkit_flavor "${webkit_root}/minibrowser-gtk" \
+                bin/MiniBrowser bin/WebKitWebProcess bin/WebKitGPUProcess \
+                bin/WebKitNetworkProcess lib/libwebkitgtkinjectedbundle.so
+              audit_webkit_flavor "${webkit_root}/minibrowser-wpe" \
+                bin/MiniBrowser bin/WPEWebProcess bin/WPEGPUProcess \
+                bin/WPENetworkProcess lib/libWPEInjectedBundle.so
+              echo "Audited the packaged GTK and WPE WebKit dependency closures."
             '
 
       - name: Upload native artifacts

@@ -13,7 +13,7 @@ All notable Sitepull releases are documented here.
 - Main-process capture snapshots and sequence-aware renderer reconciliation on initial load and window focus
 - Native packaged-application smoke tests for expected maker artifacts, hardened Electron fuses, embedded WebKit launch, and renderer startup on macOS, Linux, and Windows
 - Quality- and metadata-gated tagged distribution with immutable action pins, exact release-asset checksum verification, and GitHub build-provenance attestations for native artifacts and `SHA256SUMS.txt`
-- Ubuntu 24.04 DEB dependency metadata plus a pristine-container install and packaged-runtime probe
+- Ubuntu 24.04 DEB dependency metadata, a native installed-package runtime smoke test, and an independent pristine-container install and layout audit
 - A durable versioned per-user CLI deployment behind the global `sitepull` command instead of a checkout-bound link
 
 ### Changed
