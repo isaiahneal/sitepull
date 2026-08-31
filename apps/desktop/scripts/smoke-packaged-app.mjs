@@ -25,6 +25,20 @@ if (typeof desktopVersion !== 'string' || desktopVersion === '') {
   throw new Error('Desktop package version is missing.');
 }
 
+const linuxDistributionTarget = process.env.SITEPULL_LINUX_TARGET?.trim() || 'ubuntu24.04';
+const supportedLinuxDistributionTargets = new Set(['ubuntu24.04', 'debian12', 'debian13']);
+if (platformName === 'linux' && !supportedLinuxDistributionTargets.has(linuxDistributionTarget)) {
+  throw new Error(`Unsupported SITEPULL_LINUX_TARGET: ${linuxDistributionTarget}`);
+}
+
+function debianArchitecture(nodeArchitecture) {
+  if (nodeArchitecture === 'x64') return 'amd64';
+  if (nodeArchitecture === 'ia32') return 'i386';
+  if (nodeArchitecture === 'armv7l') return 'armhf';
+  if (nodeArchitecture === 'arm') return 'armel';
+  return nodeArchitecture;
+}
+
 function packagedLayout() {
   if (platformName === 'darwin') {
     const application = path.join(packageDirectory, 'Sitepull.app');
@@ -66,19 +80,37 @@ async function verifyMakerOutputs() {
   const expectations =
     platformName === 'darwin'
       ? [
-          ['DMG', (file) => file.endsWith('.dmg')],
-          ['ZIP', (file) => file.endsWith(`-${desktopVersion}.zip`)],
+          [
+            'DMG',
+            (file) => path.basename(file) === `Sitepull-${desktopVersion}-${process.arch}.dmg`,
+          ],
+          [
+            'ZIP',
+            (file) =>
+              path.basename(file) === `Sitepull-darwin-${process.arch}-${desktopVersion}.zip`,
+          ],
         ]
       : platformName === 'linux'
-        ? [['DEB', (file) => file.includes(desktopVersion) && file.endsWith('.deb')]]
+        ? [
+            [
+              'DEB',
+              (file) =>
+                path.basename(file) ===
+                `sitepull_${desktopVersion}-1~${linuxDistributionTarget}_${debianArchitecture(process.arch)}.deb`,
+            ],
+          ]
         : [
-            ['Squirrel setup executable', (file) => file.endsWith('Setup.exe')],
+            ['Squirrel setup executable', (file) => path.basename(file) === 'SitepullSetup.exe'],
             [
               'Squirrel package',
-              (file) => file.includes(desktopVersion) && file.endsWith('.nupkg'),
+              (file) => path.basename(file) === `sitepull-${desktopVersion}-full.nupkg`,
             ],
             ['Squirrel RELEASES index', (file) => path.basename(file) === 'RELEASES'],
-            ['ZIP', (file) => file.endsWith(`-${desktopVersion}.zip`)],
+            [
+              'ZIP',
+              (file) =>
+                path.basename(file) === `Sitepull-win32-${process.arch}-${desktopVersion}.zip`,
+            ],
           ];
 
   for (const [label, matches] of expectations) {
@@ -90,6 +122,19 @@ async function verifyMakerOutputs() {
   console.log(
     `Native maker outputs verified (${expectations.map(([label]) => label).join(', ')}).`,
   );
+}
+
+async function verifyMacBinaryArchitecture(executable, label) {
+  if (platformName !== 'darwin') return;
+  const expectedArchitecture = process.arch === 'x64' ? 'x86_64' : process.arch;
+  const { stdout } = await execFileAsync('/usr/bin/lipo', ['-archs', executable]);
+  const architectures = stdout.trim().split(/\s+/u);
+  if (!architectures.includes(expectedArchitecture)) {
+    throw new Error(
+      `${label} does not contain the native ${expectedArchitecture} architecture: ${architectures.join(', ')}`,
+    );
+  }
+  console.log(`${label} architecture verified (${architectures.join(', ')}).`);
 }
 
 async function verifyFuses(fuseTarget) {
@@ -142,6 +187,17 @@ async function smokePackagedWebKit(resources) {
     throw new Error(`Playwright resolved WebKit outside packaged Resources: ${executable}`);
   }
   await access(executable, fsConstants.X_OK);
+  if (platformName === 'darwin') {
+    const webkitBinary = path.join(
+      path.dirname(executable),
+      'Playwright.app',
+      'Contents',
+      'MacOS',
+      'Playwright',
+    );
+    await assertFile(webkitBinary, 'Packaged WebKit binary');
+    await verifyMacBinaryArchitecture(webkitBinary, 'Packaged WebKit');
+  }
 
   const browser = await webkit.launch({ headless: true });
   try {
@@ -376,6 +432,7 @@ const layout = packagedLayout();
 await assertFile(layout.executable, 'Packaged Sitepull executable');
 await verifyMakerOutputs();
 await verifyFuses(layout.fuseTarget);
+await verifyMacBinaryArchitecture(layout.executable, 'Packaged Electron');
 await verifyMacSignature(layout.application);
 await smokePackagedWebKit(layout.resources);
 await smokePackagedRenderer(layout.executable);

@@ -35,13 +35,15 @@ WebKit is the default and bundled desktop rendering engine. Chromium and Firefox
 
 Desktop packages are published on the [GitHub Releases page](https://github.com/isaiahneal/sitepull/releases):
 
-- macOS arm64: DMG and ZIP
-- Ubuntu 24.04 x64: DEB
+- macOS 15+ Apple silicon (arm64): DMG and ZIP
+- macOS 15+ Intel (x64): DMG and ZIP
+- Ubuntu 24.04 x64: distribution-matched DEB
+- Debian 12 and Debian 13 x64: distribution-matched DEBs
 - Windows x64: Squirrel Setup executable and ZIP
 
 Each desktop package contains its own Playwright WebKit runtime. Release artifacts are built on their matching operating system so the embedded browser is native to that platform.
 
-The community `v0.2.0` artifacts are not backed by Apple Developer ID, Microsoft Authenticode, or Linux repository signing. See [Distribution trust](#distribution-trust) before installing a release artifact.
+The community `v0.3.0` artifacts are not backed by Apple Developer ID, Microsoft Authenticode, or Linux repository signing. See [Distribution trust](#distribution-trust) before installing a release artifact.
 
 ## Requirements
 
@@ -49,9 +51,9 @@ Packaged desktop builds include Node/Electron and the matching Playwright WebKit
 
 - Node.js `24.20.0` (current LTS line used by this release)
 - pnpm `11.24.0`
-- A supported macOS or Windows host, or Ubuntu 24.04 x64 for the packaged Linux desktop
+- macOS 15+, Windows x64, Ubuntu 24.04 x64, Debian 12 x64, or Debian 13 x64 for a packaged desktop build
 - Xcode Command Line Tools for local macOS DMG creation
-- `fakeroot` for local Ubuntu DEB creation
+- `fakeroot` for local Ubuntu or Debian DEB creation
 
 Chromium and Firefox are optional CLI/development engines and require their corresponding Playwright browser packages.
 
@@ -246,24 +248,26 @@ pnpm package:desktop
 
 # Native distributables
 pnpm make:mac
-pnpm make:linux
+pnpm make:linux:ubuntu24
+pnpm make:linux:debian12
+pnpm make:linux:debian13
 pnpm make:windows
 ```
 
-Platform-specific unpacked build intermediates are also available through `pnpm package:mac`, `pnpm package:linux`, and `pnpm package:windows`. Forge writes output below `apps/desktop/out/`. On Linux, the supported v0.2.0 installation is the DEB produced by `pnpm make:linux`; installing it is what safely establishes Electron's sandbox-helper ownership and permissions.
+`pnpm make:linux` remains an alias for the Ubuntu 24.04 target. Run each Linux command on its named distribution: the build downloads that distribution's Playwright WebKit ABI and writes a uniquely revised DEB. Platform-specific unpacked build intermediates are also available through `pnpm package:mac`, `pnpm package:linux`, and `pnpm package:windows`. Forge writes output below `apps/desktop/out/`. Installing a Linux DEB safely establishes Electron's sandbox-helper ownership and permissions.
 
-Build each target on its native operating system. The repository's distribution workflow does exactly that for macOS, Ubuntu Linux, and Windows. Distribution waits for the reusable quality workflow and verifies that a release tag exactly matches `package.json` plus a nonempty versioned release-notes file before any native build begins. External workflow actions are pinned to immutable commits. Each runner then verifies its expected maker outputs, Electron fuse state, the packaged app's own Playwright module resolution, embedded WebKit launch, preload/IPC bridge, and renderer startup; macOS also verifies the bundle's internal ad-hoc signature consistency. On Linux, the generated DEB is installed and fully smoke-tested on the native Ubuntu runner with Chromium's sandbox enabled. The same DEB is then independently clean-installed in a digest-pinned Ubuntu 24.04 container, where its dependency closure, executable layout, embedded WebKit launcher, and root-owned `4755` sandbox helper are audited. macOS DMG creation requires Xcode Command Line Tools; Ubuntu DEB creation requires `fakeroot`; Windows Squirrel creation runs on Windows.
+Build each target on its native operating system and architecture. The repository's distribution workflow does exactly that on Apple-silicon and Intel macOS 15 runners, Ubuntu 24.04, Debian 12, Debian 13, and Windows. Distribution waits for the reusable quality workflow and verifies that a release tag exactly matches `package.json` plus a nonempty versioned release-notes file before any native build begins. External workflow actions and Linux build images are pinned to immutable identities. Each runner verifies exact maker outputs, Electron fuse state, the packaged app's own Playwright module resolution, embedded WebKit launch, preload/IPC bridge, and renderer startup. macOS additionally verifies the bundle's internal ad-hoc signature consistency and the native architecture of both Electron and WebKit. The Ubuntu DEB is installed and smoke-tested on the native runner, then independently clean-installed in a pinned Ubuntu container for its package and dependency audit. Each Debian DEB is clean-installed on its matching distribution, audited, and smoke-tested as an unprivileged user. These Linux gates verify package identity, dependency closure, executable layout, embedded GTK/WPE WebKit binaries, and the root-owned `4755` sandbox helper. The release gate rejects a missing or extra native asset before checksums, attestations, or publication.
 
 ## Distribution trust
 
 Electron fuses harden every package. Local macOS packages are re-signed ad hoc after fuse mutation and verified for internal signature consistency, but ad-hoc signing is not an Apple Developer ID signature and cannot be notarized. The community artifacts do not claim hardened runtime, and Sitepull does not weaken the bundle with the disable-library-validation entitlement. A hardened-runtime, notarized macOS distribution requires an Apple Developer identity and notarization credentials.
 
-Windows packages likewise require an Authenticode certificate for publisher trust, and Linux packages require a repository/package-signing workflow for signed distribution. Those private credentials are intentionally absent from this public repository and its `v0.2.0` community builds.
+Windows packages likewise require an Authenticode certificate for publisher trust, and Linux packages require a repository/package-signing workflow for signed distribution. Those private credentials are intentionally absent from this public repository and its `v0.3.0` community builds.
 
 For tagged releases produced by the current workflow, GitHub Actions generates `SHA256SUMS.txt`, verifies that it covers and matches every staged asset before publication, and records Sigstore-backed SLSA provenance attestations for every native asset and for the checksum manifest itself. After downloading an asset, verify its provenance with GitHub CLI:
 
 ```bash
-gh attestation verify ./Sitepull.dmg \
+gh attestation verify ./Sitepull-0.3.0-arm64.dmg \
   --repo isaiahneal/sitepull \
   --signer-workflow isaiahneal/sitepull/.github/workflows/distribution.yml
 ```
@@ -277,12 +281,12 @@ An attestation proves which repository and workflow produced the exact bytes; it
 - Content behind login, anti-bot controls, CAPTCHAs, paywalls, or private-network hosts is currently intentionally unsupported.
 - Playwright WebKit is useful for Safari-adjacent behavior, but it is not the Safari application.
 - Packaged desktop builds intentionally embed only WebKit; Chromium and Firefox remain optional CLI/source-development engines.
-- The packaged Linux desktop is targeted and clean-install tested on Ubuntu 24.04 x64. A generic Linux ZIP is intentionally not published because an archive cannot safely install Electron's root-owned setuid sandbox helper; the DEB establishes and verifies those permissions without disabling Chromium's sandbox. An RPM is also not published: Playwright's embedded WebKit build targets Ubuntu ABIs that current Fedora repositories cannot satisfy honestly.
+- Packaged Linux desktops are targeted and clean-install tested on Ubuntu 24.04, Debian 12, and Debian 13 x64. Use the DEB named for the installed distribution; their WebKit ABIs and package dependencies are intentionally distinct. A generic Linux ZIP is not published because an archive cannot safely install Electron's root-owned setuid sandbox helper. RPM and Alpine packages are also not published because the pinned Playwright WebKit release has no matching Fedora or musl runtime build.
 - WebKit page workers are disabled during capture so worker-only WebTransport cannot bypass the validated HTTP proxy. Sites that require dedicated/shared workers for rendering may lose that worker-driven behavior; Chromium and Firefox instead use engine-level non-proxied transport restrictions.
 - Resource-body capture defaults to 25 MiB per response, 512 MiB across the capture, and three concurrent body reads. Responses without a trustworthy content length still require one complete in-memory Playwright buffer before their actual size can be enforced.
 - Responsive screenshots reuse one stabilized page and resize it through the configured viewports. DOM/computed-style evidence is extracted at the first configured viewport, so JavaScript or server behavior selected only during an initial viewport-specific load requires a separate capture.
 - Component names and semantic design roles are deterministic inferences. Raw measurements, frequencies, routes, and signatures remain available for downstream judgment.
-- Official publisher signing, macOS hardened runtime, and notarization are not configured for the public `v0.2.0` artifacts. GitHub attestations establish workflow provenance, not publisher identity.
+- Official publisher signing, macOS hardened runtime, and notarization are not configured for the public `v0.3.0` artifacts. GitHub attestations establish workflow provenance, not publisher identity.
 
 ## License
 

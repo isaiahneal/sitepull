@@ -51,18 +51,33 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: macOS
+          - name: macOS 15 (Apple silicon)
             os: macos-15
             command: make:mac
-            artifact: sitepull-macos
-          - name: Linux
+            artifact: sitepull-macos-arm64
+            expected_arch: arm64
+            linux_target: ''
+          - name: macOS 15 (Intel)
+            os: macos-15-intel
+            command: make:mac
+            artifact: sitepull-macos-x64
+            expected_arch: x64
+            linux_target: ''
+          - name: Ubuntu 24.04 (x64)
             os: ubuntu-24.04
-            command: make:linux
-            artifact: sitepull-linux
-          - name: Windows
+            command: make:linux:ubuntu24
+            artifact: sitepull-ubuntu24.04-x64
+            expected_arch: x64
+            linux_target: ubuntu24.04
+          - name: Windows (x64)
             os: windows-2022
             command: make:windows
-            artifact: sitepull-windows
+            artifact: sitepull-windows-x64
+            expected_arch: x64
+            linux_target: ''
+
+    env:
+      SITEPULL_LINUX_TARGET: ${{ matrix.linux_target }}
 
     steps:
       - name: Check out source
@@ -79,6 +94,13 @@ jobs:
       - name: Install Linux maker prerequisites
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install --yes fakeroot xvfb
+
+      - name: Verify native runner architecture
+        env:
+          EXPECTED_NODE_ARCH: ${{ matrix.expected_arch }}
+        run: >-
+          node --eval "if (process.arch !== process.env.EXPECTED_NODE_ARCH)
+          throw new Error('Expected ' + process.env.EXPECTED_NODE_ARCH + ', received ' + process.arch)"
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -112,8 +134,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          package_version="$(node -p "JSON.parse(require('fs').readFileSync('package.json', 'utf8')).version")"
           docker run --rm \
             --volume "${PWD}/apps/desktop/out/make:/artifacts:ro" \
+            --volume "${PWD}/scripts/audit-installed-linux-package.sh:/audit-installed-linux-package.sh:ro" \
+            --env "SITEPULL_EXPECTED_DEB_VERSION=${package_version}-1~ubuntu24.04" \
             ubuntu:24.04@sha256:1e0a86e57d247923571b75e0aaf48a1449cf8c543d51fb3e07a4a7d7bfa79316 \
             bash -euxo pipefail -c '
               export DEBIAN_FRONTEND=noninteractive
@@ -122,72 +147,170 @@ jobs:
               test -n "${deb}"
               apt-get install --yes "${deb}"
               apt-get check
-              test "$(dpkg-query --show --showformat="\${db:Status-Abbrev}" sitepull)" = "ii "
-              executable="$(readlink -f "$(command -v sitepull)")"
-              test "${executable}" = "/usr/lib/sitepull/Sitepull"
-              test -x "${executable}"
-              sandbox="$(dirname "${executable}")/chrome-sandbox"
-              test "$(stat --format="%u:%g:%a" "${sandbox}")" = "0:0:4755"
-              browser_root="/usr/lib/sitepull/resources/.playwright-browsers"
-              mapfile -d "" -t webkit_launchers < <(
-                find "${browser_root}" -mindepth 2 -maxdepth 2 \
-                  -type f -name pw_run.sh -print0
-              )
-              test "${#webkit_launchers[@]}" -eq 1
-              test -x "${webkit_launchers[0]}"
-
-              electron_dependencies="$(ldd "${executable}")"
-              printf "%s\n" "${electron_dependencies}"
-              if grep -Fq "not found" <<< "${electron_dependencies}"; then
-                exit 1
-              fi
-
-              audit_webkit_flavor() {
-                local flavor_root="$1"
-                shift
-                local dependencies relative target
-                test -x "${flavor_root}/MiniBrowser"
-                for relative in "$@"; do
-                  target="${flavor_root}/${relative}"
-                  test -x "${target}"
-                  if ! dependencies="$(
-                    LD_LIBRARY_PATH="${flavor_root}/lib:${flavor_root}/sys/lib" \
-                      ldd "${target}" 2>&1
-                  )"; then
-                    printf "ldd failed for %s\n%s\n" "${target}" "${dependencies}" >&2
-                    return 1
-                  fi
-                  if [[ "${dependencies}" == *"not found"* ]]; then
-                    printf "Unresolved dependency for %s\n%s\n" \
-                      "${target}" "${dependencies}" >&2
-                    return 1
-                  fi
-                done
-              }
-
-              webkit_root="$(dirname "${webkit_launchers[0]}")"
-              audit_webkit_flavor "${webkit_root}/minibrowser-gtk" \
-                bin/MiniBrowser bin/WebKitWebProcess bin/WebKitGPUProcess \
-                bin/WebKitNetworkProcess lib/libwebkitgtkinjectedbundle.so
-              audit_webkit_flavor "${webkit_root}/minibrowser-wpe" \
-                bin/MiniBrowser bin/WPEWebProcess bin/WPEGPUProcess \
-                bin/WPENetworkProcess lib/libWPEInjectedBundle.so
-              echo "Audited the packaged GTK and WPE WebKit dependency closures."
+              /audit-installed-linux-package.sh
             '
 
       - name: Upload native artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: ${{ matrix.artifact }}-${{ runner.arch }}
+          name: ${{ matrix.artifact }}
           path: apps/desktop/out/make/**/*
           if-no-files-found: error
           retention-days: 14
           compression-level: 0
 
+  make-debian:
+    name: ${{ matrix.name }} build
+    needs: [quality, release-metadata]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Debian 12 (x64)
+            target: debian12
+            command: make:linux:debian12
+            artifact: sitepull-debian12-x64
+            image: node:24.20.0-bookworm@sha256:be23f54a88d34e8824c741b19b91064094f92c1c97b194144bfc8b50d67258e2
+          - name: Debian 13 (x64)
+            target: debian13
+            command: make:linux:debian13
+            artifact: sitepull-debian13-x64
+            image: node:24.20.0-trixie@sha256:f7d34e58713740f9eef9092c0bd6ff10369d132f7238399a4b270f16d47fa608
+    container:
+      image: ${{ matrix.image }}
+    env:
+      SITEPULL_LINUX_TARGET: ${{ matrix.target }}
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Install pnpm and Node.js
+        uses: pnpm/setup@84cb39b217b10273981911c288cd62326dc7c6d2 # v2
+        with:
+          version: 11.24.0
+          runtime: node@24.20.0
+          cache: true
+          install: false
+
+      - name: Verify native x64 builder
+        run: >-
+          node --eval "if (process.arch !== 'x64')
+          throw new Error('Expected x64, received ' + process.arch)"
+
+      - name: Install DEB maker prerequisites
+        shell: bash
+        run: |
+          apt-get update
+          apt-get install --yes fakeroot
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build distribution-matched DEB
+        run: pnpm run ${{ matrix.command }}
+
+      - name: Verify DEB identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          package_version="$(node -p "JSON.parse(require('fs').readFileSync('package.json', 'utf8')).version")"
+          expected_version="${package_version}-1~${SITEPULL_LINUX_TARGET}"
+          expected_name="sitepull_${expected_version}_amd64.deb"
+          deb="$(find apps/desktop/out/make -type f -name '*.deb' -print -quit)"
+          test "$(basename "${deb}")" = "${expected_name}"
+          test "$(dpkg-deb --field "${deb}" Package)" = "sitepull"
+          test "$(dpkg-deb --field "${deb}" Version)" = "${expected_version}"
+          test "$(dpkg-deb --field "${deb}" Architecture)" = "amd64"
+
+      - name: Upload native artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ${{ matrix.artifact }}
+          path: apps/desktop/out/make/**/*.deb
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
+  audit-debian:
+    name: ${{ matrix.name }} clean install
+    needs: [make-debian]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Debian 12 (x64)
+            target: debian12
+            artifact: sitepull-debian12-x64
+            image: node:24.20.0-bookworm@sha256:be23f54a88d34e8824c741b19b91064094f92c1c97b194144bfc8b50d67258e2
+          - name: Debian 13 (x64)
+            target: debian13
+            artifact: sitepull-debian13-x64
+            image: node:24.20.0-trixie@sha256:f7d34e58713740f9eef9092c0bd6ff10369d132f7238399a4b270f16d47fa608
+    container:
+      image: ${{ matrix.image }}
+      # The disposable audit container must permit Electron to create its own
+      # namespaces. Sitepull's setuid sandbox and hardened fuses stay enabled.
+      options: --security-opt seccomp=unconfined
+    env:
+      SITEPULL_LINUX_TARGET: ${{ matrix.target }}
+
+    steps:
+      - name: Check out smoke tests
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Install pnpm and Node.js
+        uses: pnpm/setup@84cb39b217b10273981911c288cd62326dc7c6d2 # v2
+        with:
+          version: 11.24.0
+          runtime: node@24.20.0
+          cache: true
+          install: false
+
+      - name: Install smoke-test dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Download native artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: ${{ matrix.artifact }}
+          path: apps/desktop/out/make/${{ matrix.target }}
+
+      - name: Clean-install and audit DEB
+        shell: bash
+        run: |
+          set -euo pipefail
+          export DEBIAN_FRONTEND=noninteractive
+          package_version="$(node -p "JSON.parse(require('fs').readFileSync('package.json', 'utf8')).version")"
+          export SITEPULL_EXPECTED_DEB_VERSION="${package_version}-1~${SITEPULL_LINUX_TARGET}"
+          apt-get update
+          deb="$(find apps/desktop/out/make -type f -name '*.deb' -print -quit)"
+          deb="$(realpath "${deb}")"
+          apt-get install --yes "${deb}" xvfb
+          apt-get check
+          scripts/audit-installed-linux-package.sh
+
+      - name: Smoke-test installed application as an unprivileged user
+        shell: bash
+        run: |
+          set -euo pipefail
+          useradd --create-home --shell /bin/bash sitepull-smoke
+          install -d -m 700 -o sitepull-smoke -g sitepull-smoke /tmp/sitepull-smoke-runtime
+          runuser --user sitepull-smoke -- env \
+            HOME=/home/sitepull-smoke \
+            XDG_RUNTIME_DIR=/tmp/sitepull-smoke-runtime \
+            SITEPULL_LINUX_TARGET="${SITEPULL_LINUX_TARGET}" \
+            SITEPULL_PACKAGE_DIRECTORY=/usr/lib/sitepull \
+            node apps/desktop/scripts/smoke-packaged-app.mjs
+
   release:
     name: Publish GitHub release
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [quality, release-metadata, make]
+    needs: [quality, release-metadata, make, make-debian, audit-debian]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
@@ -197,6 +320,14 @@ jobs:
     steps:
       - name: Check out release notes
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Install pnpm and Node.js
+        uses: pnpm/setup@84cb39b217b10273981911c288cd62326dc7c6d2 # v2
+        with:
+          version: 11.24.0
+          runtime: node@24.20.0
+          cache: false
+          install: false
 
       - name: Download native artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -208,6 +339,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          package_version="$(node -p "JSON.parse(require('fs').readFileSync('package.json', 'utf8')).version")"
           mkdir -p release-assets
           while IFS= read -r -d '' source; do
             filename="$(basename "$source")"
@@ -229,12 +361,7 @@ jobs:
             cp "$source" "$destination"
           done < <(find native-artifacts -type f -print0)
 
-          asset_count="$(find release-assets -maxdepth 1 -type f | wc -l | tr -d ' ')"
-          if [[ "$asset_count" -lt 7 ]]; then
-            echo "Expected at least 7 native release assets, found $asset_count" >&2
-            find native-artifacts -type f -print
-            exit 1
-          fi
+          node scripts/release-assets.ts verify "${package_version}" release-assets
 
           checksum_manifest="${RUNNER_TEMP}/SHA256SUMS.txt"
           (

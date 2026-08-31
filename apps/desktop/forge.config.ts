@@ -79,6 +79,169 @@ export const PLAYWRIGHT_WEBKIT_UBUNTU_24_DEPENDENCIES = [
   'libxslt1.1',
 ] as const;
 
+// Keep these aligned with Playwright's Debian-specific WebKit runtime
+// dependency lists. Each release DEB is built and tested inside the matching
+// distribution so the embedded browser and declared ABI stay in lockstep.
+export const PLAYWRIGHT_WEBKIT_DEBIAN_12_DEPENDENCIES = [
+  'libsoup-3.0-0',
+  'gstreamer1.0-libav',
+  'gstreamer1.0-plugins-bad',
+  'gstreamer1.0-plugins-base',
+  'gstreamer1.0-plugins-good',
+  'libatk-bridge2.0-0',
+  'libatk1.0-0',
+  'libcairo2',
+  'libdbus-1-3',
+  'libdrm2',
+  'libegl1',
+  'libenchant-2-2',
+  'libepoxy0',
+  'libevdev2',
+  'libfontconfig1',
+  'libfreetype6',
+  'libgbm1',
+  'libgdk-pixbuf-2.0-0',
+  'libgles2',
+  'libglib2.0-0',
+  'libglx0',
+  'libgstreamer-gl1.0-0',
+  'libgstreamer-plugins-base1.0-0',
+  'libgstreamer1.0-0',
+  'libgtk-4-1',
+  'libgudev-1.0-0',
+  'libharfbuzz-icu0',
+  'libharfbuzz0b',
+  'libhyphen0',
+  'libicu72',
+  'libjpeg62-turbo',
+  'liblcms2-2',
+  'libmanette-0.2-0',
+  'libnotify4',
+  'libopengl0',
+  'libopenjp2-7',
+  'libopus0',
+  'libpango-1.0-0',
+  'libpng16-16',
+  'libproxy1v5',
+  'libsecret-1-0',
+  'libwayland-client0',
+  'libwayland-egl1',
+  'libwayland-server0',
+  'libwebp7',
+  'libwebpdemux2',
+  'libwoff1',
+  'libx11-6',
+  'libxcomposite1',
+  'libxdamage1',
+  'libxkbcommon0',
+  'libxml2',
+  'libxslt1.1',
+  'libatomic1',
+  'libevent-2.1-7',
+  'libavif15',
+] as const;
+
+export const PLAYWRIGHT_WEBKIT_DEBIAN_13_DEPENDENCIES = [
+  'libsoup-3.0-0',
+  'gstreamer1.0-libav',
+  'gstreamer1.0-plugins-bad',
+  'gstreamer1.0-plugins-base',
+  'gstreamer1.0-plugins-good',
+  'libatk-bridge2.0-0t64',
+  'libatk1.0-0t64',
+  'libcairo2',
+  'libdbus-1-3',
+  'libdrm2',
+  'libegl1',
+  'libenchant-2-2',
+  'libepoxy0',
+  'libevdev2',
+  'libfontconfig1',
+  'libfreetype6',
+  'libgbm1',
+  'libgdk-pixbuf-2.0-0',
+  'libgles2',
+  'libglib2.0-0t64',
+  'libglx0',
+  'libgstreamer-gl1.0-0',
+  'libgstreamer-plugins-base1.0-0',
+  'libgstreamer1.0-0',
+  'libgtk-4-1',
+  'libgudev-1.0-0',
+  'libharfbuzz-icu0',
+  'libharfbuzz0b',
+  'libhyphen0',
+  'libicu76',
+  'libjpeg62-turbo',
+  'liblcms2-2',
+  'libmanette-0.2-0',
+  'libnotify4',
+  'libopengl0',
+  'libopenjp2-7',
+  'libopus0',
+  'libpango-1.0-0',
+  'libpng16-16t64',
+  'libproxy1v5',
+  'libsecret-1-0',
+  'libwayland-client0',
+  'libwayland-egl1',
+  'libwayland-server0',
+  'libwebp7',
+  'libwebpdemux2',
+  'libwoff1',
+  'libx11-6',
+  'libxcomposite1',
+  'libxdamage1',
+  'libxkbcommon0',
+  'libxml2',
+  'libxslt1.1',
+  'libatomic1',
+  'libevent-2.1-7t64',
+  'libavif16',
+] as const;
+
+export const LINUX_DISTRIBUTION_TARGETS = ['ubuntu24.04', 'debian12', 'debian13'] as const;
+export type LinuxDistributionTarget = (typeof LINUX_DISTRIBUTION_TARGETS)[number];
+
+export interface LinuxDistributionConfig {
+  dependencies: readonly string[];
+  revision: string;
+}
+
+export function resolveLinuxDistributionTarget(
+  value = process.env.SITEPULL_LINUX_TARGET,
+): LinuxDistributionTarget {
+  const target = value?.trim() || 'ubuntu24.04';
+  if ((LINUX_DISTRIBUTION_TARGETS as readonly string[]).includes(target)) {
+    return target as LinuxDistributionTarget;
+  }
+  throw new Error(
+    `Unsupported SITEPULL_LINUX_TARGET ${JSON.stringify(target)}. Expected one of: ${LINUX_DISTRIBUTION_TARGETS.join(', ')}.`,
+  );
+}
+
+export function linuxDistributionConfig(
+  target = resolveLinuxDistributionTarget(),
+): LinuxDistributionConfig {
+  switch (target) {
+    case 'ubuntu24.04':
+      return {
+        dependencies: PLAYWRIGHT_WEBKIT_UBUNTU_24_DEPENDENCIES,
+        revision: '1~ubuntu24.04',
+      };
+    case 'debian12':
+      return {
+        dependencies: PLAYWRIGHT_WEBKIT_DEBIAN_12_DEPENDENCIES,
+        revision: '1~debian12',
+      };
+    case 'debian13':
+      return {
+        dependencies: PLAYWRIGHT_WEBKIT_DEBIAN_13_DEPENDENCIES,
+        revision: '1~debian13',
+      };
+  }
+}
+
 export const PLAYWRIGHT_WEBKIT_FONT_RECOMMENDATIONS = [
   'fonts-freefont-ttf',
   'fonts-ipafont-gothic',
@@ -264,7 +427,6 @@ const config: ForgeConfig = {
     new MakerZIP({}, ['darwin', 'win32']),
     new MakerDMG(
       {
-        name: 'Sitepull',
         format: 'ULFO',
       },
       ['darwin'],
@@ -278,6 +440,7 @@ const config: ForgeConfig = {
           description: 'Capture browser-delivered design references.',
           productDescription:
             'Sitepull captures inspectable local artifacts from browser-delivered websites.',
+          revision: linuxDistributionConfig().revision,
           section: 'devel',
           priority: 'optional',
           maintainer: 'Isaiah Neal',
@@ -285,7 +448,7 @@ const config: ForgeConfig = {
           bin: 'Sitepull',
           icon: DESKTOP_ICON_PATHS.linux,
           categories: ['Development', 'Utility'],
-          depends: [...PLAYWRIGHT_WEBKIT_UBUNTU_24_DEPENDENCIES],
+          depends: [...linuxDistributionConfig().dependencies],
           recommends: [...PLAYWRIGHT_WEBKIT_FONT_RECOMMENDATIONS],
           suggests: ['xvfb'],
         },

@@ -13,7 +13,7 @@ const PACKAGE_MANIFESTS = [
 
 describe('release version', () => {
   it('keeps package metadata aligned with the shared runtime version', () => {
-    expect(SITEPULL_VERSION).toBe('0.2.0');
+    expect(SITEPULL_VERSION).toBe('0.3.0');
 
     for (const manifestPath of PACKAGE_MANIFESTS) {
       const manifest = JSON.parse(readFileSync(new URL(manifestPath, import.meta.url), 'utf8')) as {

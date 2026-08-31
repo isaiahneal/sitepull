@@ -2,6 +2,26 @@
 
 All notable Sitepull releases are documented here.
 
+## [0.3.0] - 2026-08-31
+
+### Added
+
+- Native macOS 15 Intel x64 DMG and ZIP artifacts alongside the existing Apple-silicon build
+- Distribution-matched Debian 12 and Debian 13 x64 DEBs with their own embedded Playwright WebKit runtimes and dependency closures
+- Clean-install Debian gates that audit package identity, Electron and GTK/WPE WebKit dependencies, the root-owned setuid sandbox helper, and a full unprivileged packaged runtime smoke test
+- Native architecture verification for packaged macOS Electron and WebKit binaries
+
+### Changed
+
+- Ubuntu, Debian 12, and Debian 13 packages now carry distinct Debian revisions so their release filenames and ABI requirements cannot be confused
+- The release workflow requires an exact eleven-file native asset manifest before producing checksums, provenance attestations, or the GitHub release
+- macOS DMGs now include the application version and architecture in their filenames
+
+### Compatibility
+
+- Packaged desktop support now covers macOS 15+ on Apple silicon and Intel, Ubuntu 24.04 x64, Debian 12/13 x64, and Windows x64
+- Generic Linux archives, RPMs, Alpine/musl packages, and universal macOS bundles remain intentionally excluded because they cannot preserve Sitepull's tested browser ABI and sandbox guarantees
+
 ## [0.2.0] - 2026-08-30
 
 ### Added
@@ -51,5 +71,6 @@ All notable Sitepull releases are documented here.
 - PNG dimension and decoded-pixel enforcement at capture time and again before desktop rendering
 - Deterministic fixture site plus unit, integration, packaging, and real-browser acceptance coverage
 
+[0.3.0]: https://github.com/isaiahneal/sitepull/releases/tag/v0.3.0
 [0.2.0]: https://github.com/isaiahneal/sitepull/releases/tag/v0.2.0
 [0.1.0]: https://github.com/isaiahneal/sitepull/releases/tag/v0.1.0

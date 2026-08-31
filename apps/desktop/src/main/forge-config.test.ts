@@ -4,12 +4,17 @@ import { describe, expect, it } from 'vitest';
 
 import forgeConfig, {
   DESKTOP_ICON_PATHS,
+  LINUX_DISTRIBUTION_TARGETS,
+  PLAYWRIGHT_WEBKIT_DEBIAN_12_DEPENDENCIES,
+  PLAYWRIGHT_WEBKIT_DEBIAN_13_DEPENDENCIES,
   PLAYWRIGHT_WEBKIT_FONT_RECOMMENDATIONS,
   PLAYWRIGHT_WEBKIT_UBUNTU_24_DEPENDENCIES,
   PRODUCTION_DEPLOY_ARGS,
   desktopIconForPlatform,
+  linuxDistributionConfig,
   packagedMacAppPath,
   productionDeployEnvironment,
+  resolveLinuxDistributionTarget,
   resolvePnpmInvocation,
 } from '../../forge.config.js';
 
@@ -96,5 +101,45 @@ describe('Electron Forge distribution configuration', () => {
     expect(new Set(PLAYWRIGHT_WEBKIT_UBUNTU_24_DEPENDENCIES).size).toBe(
       PLAYWRIGHT_WEBKIT_UBUNTU_24_DEPENDENCIES.length,
     );
+  });
+
+  it('selects an explicit dependency closure and unique package revision for each Linux target', () => {
+    expect(LINUX_DISTRIBUTION_TARGETS).toEqual(['ubuntu24.04', 'debian12', 'debian13']);
+    expect(linuxDistributionConfig('ubuntu24.04')).toEqual({
+      dependencies: PLAYWRIGHT_WEBKIT_UBUNTU_24_DEPENDENCIES,
+      revision: '1~ubuntu24.04',
+    });
+    expect(linuxDistributionConfig('debian12')).toEqual({
+      dependencies: PLAYWRIGHT_WEBKIT_DEBIAN_12_DEPENDENCIES,
+      revision: '1~debian12',
+    });
+    expect(linuxDistributionConfig('debian13')).toEqual({
+      dependencies: PLAYWRIGHT_WEBKIT_DEBIAN_13_DEPENDENCIES,
+      revision: '1~debian13',
+    });
+    expect(PLAYWRIGHT_WEBKIT_DEBIAN_12_DEPENDENCIES).toContain('libicu72');
+    expect(PLAYWRIGHT_WEBKIT_DEBIAN_13_DEPENDENCIES).toContain('libicu76');
+    expect(new Set(PLAYWRIGHT_WEBKIT_DEBIAN_12_DEPENDENCIES).size).toBe(
+      PLAYWRIGHT_WEBKIT_DEBIAN_12_DEPENDENCIES.length,
+    );
+    expect(new Set(PLAYWRIGHT_WEBKIT_DEBIAN_13_DEPENDENCIES).size).toBe(
+      PLAYWRIGHT_WEBKIT_DEBIAN_13_DEPENDENCIES.length,
+    );
+  });
+
+  it('defaults Linux packaging to Ubuntu and rejects misspelled distribution targets', () => {
+    const previousTarget = process.env.SITEPULL_LINUX_TARGET;
+    delete process.env.SITEPULL_LINUX_TARGET;
+    try {
+      expect(resolveLinuxDistributionTarget()).toBe('ubuntu24.04');
+      expect(resolveLinuxDistributionTarget('')).toBe('ubuntu24.04');
+      expect(resolveLinuxDistributionTarget(' debian12 ')).toBe('debian12');
+      expect(() => resolveLinuxDistributionTarget('ubuntu')).toThrow(
+        /Unsupported SITEPULL_LINUX_TARGET/,
+      );
+    } finally {
+      if (previousTarget === undefined) delete process.env.SITEPULL_LINUX_TARGET;
+      else process.env.SITEPULL_LINUX_TARGET = previousTarget;
+    }
   });
 });
