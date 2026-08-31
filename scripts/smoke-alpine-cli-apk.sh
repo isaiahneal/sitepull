@@ -63,7 +63,7 @@ fi
 docker run --rm \
   --init \
   --platform linux/amd64 \
-  --security-opt seccomp=unconfined \
+  --security-opt "seccomp=${repository_root}/packaging/chromium/seccomp_profile.json" \
   --shm-size=1g \
   --volume "${repository_root}:/workspace:ro" \
   --volume "${apk_directory}/${apk_name}:/package/${apk_name}:ro" \

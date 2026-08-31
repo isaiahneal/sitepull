@@ -5,4 +5,5 @@ out
 coverage
 output
 pnpm-lock.yaml
+packaging/chromium/seccomp_profile.json
 fixtures/site/public

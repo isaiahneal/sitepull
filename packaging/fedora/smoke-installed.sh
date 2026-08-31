@@ -1,5 +1,12 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -Eeuo pipefail
+
+fail() {
+  echo "Fedora CLI smoke failed: $1" >&2
+  exit 1
+}
+
+trap 'echo "Fedora CLI smoke failed at line ${LINENO}: ${BASH_COMMAND} (exit $?)." >&2' ERR
 
 readonly rpm_path="${1:-/package/sitepull-cli.rpm}"
 readonly expected_fedora_version=44
@@ -50,6 +57,8 @@ test -z "$(find /usr/lib/sitepull-cli/node_modules -type d -name prebuilds -prin
 # shellcheck disable=SC2016
 grep -Fq 'SITEPULL_SYSTEM_CHROMIUM="${SITEPULL_CHROMIUM}"' /usr/bin/sitepull
 grep -Fq 'chromiumSandbox: true' /usr/lib/sitepull-cli/node_modules/@sitepull/core/dist/index.js
+grep -Fq -- '--disable-software-rasterizer' \
+  /usr/lib/sitepull-cli/node_modules/@sitepull/core/dist/index.js
 rpm --verify sitepull-cli
 
 version_output="$(sitepull --version)"
@@ -66,8 +75,24 @@ grep -Fqi 'supports chromium only' /tmp/sitepull-wrong-engine.stderr
 readonly smoke_user=sitepull-smoke
 useradd --create-home "${smoke_user}"
 install -d -m 0700 -o "${smoke_user}" -g "${smoke_user}" "/tmp/${smoke_user}-runtime"
-capture_path="$(
-  runuser -u "${smoke_user}" -- env \
+
+if ! runuser -u "${smoke_user}" -- env \
+    HOME="/home/${smoke_user}" \
+    XDG_RUNTIME_DIR="/tmp/${smoke_user}-runtime" \
+    SITEPULL_CLI_ROOT=/usr/lib/sitepull-cli \
+    SITEPULL_CHROMIUM=/usr/bin/chromium-browser \
+    node /workspace/packaging/chromium/assert-sandbox.mjs; then
+  fail 'the installed Chromium sandbox is not fully active for the unprivileged CLI user'
+fi
+
+capture_stdout="$(mktemp /tmp/sitepull-fedora-capture-stdout.XXXXXX)"
+capture_stderr="$(mktemp /tmp/sitepull-fedora-capture-stderr.XXXXXX)"
+cleanup() {
+  rm -f -- "${capture_stdout}" "${capture_stderr}"
+}
+trap cleanup EXIT
+
+if ! runuser -u "${smoke_user}" -- env \
     HOME="/home/${smoke_user}" \
     XDG_RUNTIME_DIR="/tmp/${smoke_user}-runtime" \
     sitepull pull example.com \
@@ -76,8 +101,16 @@ capture_path="$(
       --max-pages 1 \
       --viewports desktop \
       --output "/home/${smoke_user}/captures" \
-      --quiet
-)"
+      --quiet >"${capture_stdout}" 2>"${capture_stderr}"; then
+  echo 'Fedora capture stderr:' >&2
+  cat "${capture_stderr}" >&2
+  while IFS= read -r -d '' log_file; do
+    echo "Fedora retained capture log (${log_file}):" >&2
+    cat "${log_file}" >&2
+  done < <(find "/home/${smoke_user}/captures" -type f -path '*/logs/sitepull.jsonl' -print0 2>/dev/null)
+  fail 'the unprivileged system-Chromium capture failed'
+fi
+capture_path="$(cat "${capture_stdout}")"
 
 test -d "${capture_path}"
 test -r "${capture_path}/manifest.json"
@@ -97,4 +130,4 @@ runuser -u "${smoke_user}" -- \
     }
   ' "${capture_path}/manifest.json"
 
-echo "Fedora CLI smoke passed: ${capture_path}"
+echo "Fedora CLI smoke passed with an effective Chromium sandbox: ${capture_path}"

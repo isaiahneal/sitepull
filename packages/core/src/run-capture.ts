@@ -177,7 +177,9 @@ async function launchBrowser(
     return await (
       await browserType(engine)
     ).launch({
-      ...untrustedBrowserLaunchOptions(engine, headed),
+      ...untrustedBrowserLaunchOptions(engine, headed, {
+        systemChromium: executablePath !== undefined,
+      }),
       ...(executablePath === undefined ? {} : { executablePath }),
     });
   } catch (error) {

@@ -58,6 +58,9 @@ grep -Fqx 'export SITEPULL_SYSTEM_CHROMIUM=/usr/bin/chromium-browser' /usr/bin/s
 grep -Fq 'chromiumSandbox: true' \
   /usr/lib/sitepull-cli/node_modules/@sitepull/core/dist/index.js ||
   fail 'deployed Chromium launch policy does not require its sandbox'
+grep -Fq -- '--disable-software-rasterizer' \
+  /usr/lib/sitepull-cli/node_modules/@sitepull/core/dist/index.js ||
+  fail 'deployed Chromium launch policy does not disable unsafe 3D software rendering'
 embedded_browser_directory="$(
   find /usr/lib/sitepull-cli -type d \
     \( -name '.local-browsers' -o -name '.playwright-browsers' \) \
@@ -84,6 +87,11 @@ trap cleanup EXIT HUP INT TERM
 
 adduser -D -h "$smoke_home" "$smoke_user"
 chown "$smoke_user:$smoke_user" "$capture_root"
+
+if ! su "$smoke_user" -s /bin/sh -c \
+  "HOME='$smoke_home' SITEPULL_CLI_ROOT=/usr/lib/sitepull-cli SITEPULL_CHROMIUM=/usr/bin/chromium-browser node /workspace/packaging/chromium/assert-sandbox.mjs"; then
+  fail 'the installed Chromium sandbox is not fully active for the unprivileged CLI user'
+fi
 
 if su "$smoke_user" -s /bin/sh -c \
   "HOME='$smoke_home' sitepull pull example.com --engine webkit --depth 0 --max-pages 1 --output '$capture_root' --quiet" \
@@ -134,4 +142,4 @@ node -e '
   }
 ' "$capture_path/manifest.json"
 
-printf 'Alpine package, trusted signature, global CLI, sandboxed Chromium, and one-page capture verified.\n'
+printf 'Alpine package, trusted signature, global CLI, effective Chromium sandbox, and one-page capture verified.\n'

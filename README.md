@@ -79,6 +79,8 @@ sitepull pull example.com --headless --ai-pack --zip
 
 Both packages install Node.js 24 and Chromium through the native package manager and place `sitepull` on the system `PATH`. They intentionally default to and permit only `--engine chromium`; Playwright WebKit and Electron are not native to Alpine/musl, and Playwright's current WebKit build does not match Fedora 44's browser-library ABI.
 
+Headless system-Chromium captures disable its 3D software rasterizer and Playwright's unsafe SwiftShader opt-in. DOM, CSS, Canvas 2D, and normal screenshots remain available, but WebGL content is not rendered by these GPU-less native CLI packages. This keeps arbitrary captured pages away from Chromium's lower-security SwiftShader path while avoiding distro-browser crashes on headless hosts. Explicit headed system-Chromium captures retain the host's normal graphics path.
+
 ## Installation from source
 
 Sitepull development uses Node.js 24 LTS and pnpm 11:

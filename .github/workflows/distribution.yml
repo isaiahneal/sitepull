@@ -376,7 +376,7 @@ jobs:
           docker run --rm \
             --init \
             --platform linux/amd64 \
-            --security-opt seccomp=unconfined \
+            --security-opt "seccomp=${GITHUB_WORKSPACE}/packaging/chromium/seccomp_profile.json" \
             --shm-size=1g \
             --volume "${GITHUB_WORKSPACE}:/workspace:ro" \
             --volume "${GITHUB_WORKSPACE}/dist/fedora/${rpm_name}:/package/sitepull-cli.rpm:ro" \
@@ -432,7 +432,7 @@ jobs:
           docker run --rm \
             --init \
             --platform linux/amd64 \
-            --security-opt seccomp=unconfined \
+            --security-opt "seccomp=${GITHUB_WORKSPACE}/packaging/chromium/seccomp_profile.json" \
             --shm-size=1g \
             --volume "${GITHUB_WORKSPACE}:/workspace:ro" \
             --volume "${GITHUB_WORKSPACE}/dist/alpine:/artifacts:ro" \

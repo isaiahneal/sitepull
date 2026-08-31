@@ -31,13 +31,20 @@ function untrustedPageNetworkGuard(engine: 'webkit' | 'chromium' | 'firefox'): s
 export function untrustedBrowserLaunchOptions(
   engine: 'webkit' | 'chromium' | 'firefox',
   headed: boolean,
+  options: Readonly<{ systemChromium?: boolean }> = {},
 ): LaunchOptions {
   const common: LaunchOptions = { headless: !headed };
   if (engine === 'chromium') {
+    const systemChromium = options.systemChromium === true;
     return {
       ...common,
       chromiumSandbox: true,
-      args: ['--disable-quic', '--force-webrtc-ip-handling-policy=disable_non_proxied_udp'],
+      args: [
+        '--disable-quic',
+        '--force-webrtc-ip-handling-policy=disable_non_proxied_udp',
+        ...(systemChromium && !headed ? ['--disable-software-rasterizer'] : []),
+      ],
+      ...(systemChromium ? { ignoreDefaultArgs: ['--enable-unsafe-swiftshader'] } : {}),
     };
   }
   if (engine === 'firefox') {

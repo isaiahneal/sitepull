@@ -39,7 +39,7 @@ readonly canonical_rpm="${rpm_directory}/${rpm_name}"
 docker run --rm \
   --init \
   --platform linux/amd64 \
-  --security-opt seccomp=unconfined \
+  --security-opt "seccomp=${repository_root}/packaging/chromium/seccomp_profile.json" \
   --shm-size=1g \
   --volume "${repository_root}:/workspace:ro" \
   --volume "${canonical_rpm}:/package/sitepull-cli.rpm:ro" \

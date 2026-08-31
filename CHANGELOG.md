@@ -20,6 +20,7 @@ All notable Sitepull releases are documented here.
 
 - Per-user global CLI deployments are now physically copied out of pnpm's workspace deployment, kept immutable by version, and selected through an atomic command cutover, so a later source build or failed upgrade cannot alter or strand an installed version
 - Oversized Playwright and browser-process diagnostics are now bounded only when serialized into capture evidence, preserving useful head-and-tail context without allowing a schema error to hide the original capture failure
+- Headless system-Chromium captures now avoid the unstable and lower-security SwiftShader 3D software-rendering path while retaining sandboxed DOM, CSS, Canvas 2D, and screenshot capture on Fedora and Alpine
 
 ### Compatibility
 
