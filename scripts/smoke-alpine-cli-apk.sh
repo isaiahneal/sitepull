@@ -61,8 +61,10 @@ if [[ "${key_name}" != "sitepull-alpine-v${package_version}.rsa.pub" ]]; then
 fi
 
 docker run --rm \
+  --init \
   --platform linux/amd64 \
   --security-opt seccomp=unconfined \
+  --shm-size=1g \
   --volume "${repository_root}:/workspace:ro" \
   --volume "${apk_directory}/${apk_name}:/package/${apk_name}:ro" \
   --volume "${key_directory}/${key_name}:/package/${key_name}:ro" \

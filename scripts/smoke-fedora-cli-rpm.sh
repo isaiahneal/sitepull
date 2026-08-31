@@ -37,8 +37,10 @@ readonly rpm_name
 readonly canonical_rpm="${rpm_directory}/${rpm_name}"
 
 docker run --rm \
+  --init \
   --platform linux/amd64 \
   --security-opt seccomp=unconfined \
+  --shm-size=1g \
   --volume "${repository_root}:/workspace:ro" \
   --volume "${canonical_rpm}:/package/sitepull-cli.rpm:ro" \
   "${fedora_image}" \

@@ -93,10 +93,21 @@ fi
 grep -Fqi 'supports chromium only' "$capture_root/wrong-engine.stderr" ||
   fail 'the unsupported-engine error was not actionable'
 
-capture_path="$(
-  su "$smoke_user" -s /bin/sh -c \
-    "HOME='$smoke_home' sitepull pull example.com --headless --depth 0 --max-pages 1 --viewports desktop --output '$capture_root' --quiet"
-)"
+capture_stdout="$capture_root/capture.stdout"
+capture_stderr="$capture_root/capture.stderr"
+if ! su "$smoke_user" -s /bin/sh -c \
+  "HOME='$smoke_home' sitepull pull example.com --headless --depth 0 --max-pages 1 --viewports desktop --output '$capture_root' --quiet" \
+  >"$capture_stdout" 2>"$capture_stderr"; then
+  printf '%s\n' 'Alpine capture stderr:' >&2
+  cat "$capture_stderr" >&2
+  for log_file in "$capture_root"/*/logs/sitepull.jsonl; do
+    [ -f "$log_file" ] || continue
+    printf 'Alpine retained capture log (%s):\n' "$log_file" >&2
+    cat "$log_file" >&2
+  done
+  fail 'the unprivileged system-Chromium capture failed'
+fi
+capture_path="$(cat "$capture_stdout")"
 
 case "$capture_path" in
   "$capture_root"/*) ;;

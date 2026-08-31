@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
+import { PageCaptureAttemptSchema } from '@sitepull/contracts';
 
-import { SitepullError } from './errors.js';
+import { MAX_SITEPULL_ERROR_MESSAGE_LENGTH, SitepullError } from './errors.js';
 import {
   captureWithPageRetries,
   isNonRetryableHttpClientError,
@@ -78,6 +79,49 @@ describe('page capture retry policy', () => {
       'failed',
     ]);
     expect(result.attempts.map(({ httpStatus }) => httpStatus)).toEqual([503, 503, 503]);
+  });
+
+  it('keeps oversized browser diagnostics contract-safe when a retry recovers', async () => {
+    const diagnostic = `browser target closed\n${'browser log line\n'.repeat(1_000)}`;
+    let calls = 0;
+    const result = await captureWithPageRetries(
+      () => {
+        calls += 1;
+        return calls === 1
+          ? Promise.reject(
+              new SitepullError({
+                code: 'CRAWL_FAILED',
+                message: diagnostic,
+                retryable: true,
+                details: { retryAfterMs: 0 },
+              }),
+            )
+          : Promise.resolve({ status: 200 });
+      },
+      { getHttpStatus: (value) => value.status },
+    );
+
+    expect(result.ok).toBe(true);
+    expect(result.attempts.map((attempt) => PageCaptureAttemptSchema.parse(attempt))).toHaveLength(
+      2,
+    );
+    expect(result.attempts[0]?.error?.message).toHaveLength(MAX_SITEPULL_ERROR_MESSAGE_LENGTH);
+  });
+
+  it('preserves the full terminal error while bounding its attempt evidence', async () => {
+    const diagnostic = `browser target closed\n${'browser log line\n'.repeat(1_000)}`;
+    const error = new SitepullError({
+      code: 'CRAWL_FAILED',
+      message: diagnostic,
+      retryable: false,
+    });
+    const result = await captureWithPageRetries(() => Promise.reject(error));
+
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('Expected a terminal page retry result.');
+    expect(result.error.message).toBe(diagnostic);
+    expect(PageCaptureAttemptSchema.parse(result.attempts[0])).toEqual(result.attempts[0]);
+    expect(result.attempts[0]?.error?.message).toHaveLength(MAX_SITEPULL_ERROR_MESSAGE_LENGTH);
   });
 
   it('cancels promptly while waiting in Retry-After backoff', async () => {

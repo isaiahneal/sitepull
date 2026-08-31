@@ -2,6 +2,8 @@ import { z } from 'zod';
 
 import { JsonValueSchema } from './primitives.js';
 
+export const MAX_SITEPULL_ERROR_MESSAGE_LENGTH = 10_000;
+
 export const SitepullErrorCodeSchema = z.enum([
   'INVALID_URL',
   'UNSUPPORTED_PROTOCOL',
@@ -43,7 +45,7 @@ export const SitepullErrorSchema = z
   .object({
     name: z.literal('SitepullError'),
     code: SitepullErrorCodeSchema,
-    message: z.string().min(1).max(10_000),
+    message: z.string().min(1).max(MAX_SITEPULL_ERROR_MESSAGE_LENGTH),
     stage: SitepullErrorStageSchema.optional(),
     retryable: z.boolean(),
     details: z.record(z.string(), JsonValueSchema).optional(),

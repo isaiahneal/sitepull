@@ -336,6 +336,18 @@ jobs:
         shell: bash
         run: test "$(uname -m)" = x86_64
 
+      - name: Install pinned Node.js and pnpm
+        uses: pnpm/setup@84cb39b217b10273981911c288cd62326dc7c6d2 # v2
+        with:
+          version: 11.24.0
+          runtime: node@24.20.0
+          cache: true
+          install: false
+
+      - name: Build audited native-binary-free CLI payload
+        shell: bash
+        run: packaging/fedora/build-payload.sh "${RUNNER_TEMP}/sitepull-fedora-payload"
+
       - name: Build Fedora 44 RPM
         shell: bash
         run: |
@@ -345,7 +357,9 @@ jobs:
           docker run --rm \
             --platform linux/amd64 \
             --volume "${GITHUB_WORKSPACE}:/workspace:ro" \
+            --volume "${RUNNER_TEMP}/sitepull-fedora-payload:/payload:ro" \
             --volume "${GITHUB_WORKSPACE}/dist/fedora:/output" \
+            --env SITEPULL_PAYLOAD_ROOT=/payload \
             --env "SITEPULL_SOURCE_DATE_EPOCH=${source_date_epoch}" \
             --env "SITEPULL_OUTPUT_UID=$(id -u)" \
             --env "SITEPULL_OUTPUT_GID=$(id -g)" \
@@ -360,8 +374,10 @@ jobs:
           rpm_name="sitepull-cli-${package_version}-1.fc44.x86_64.rpm"
           test -s "dist/fedora/${rpm_name}"
           docker run --rm \
+            --init \
             --platform linux/amd64 \
             --security-opt seccomp=unconfined \
+            --shm-size=1g \
             --volume "${GITHUB_WORKSPACE}:/workspace:ro" \
             --volume "${GITHUB_WORKSPACE}/dist/fedora/${rpm_name}:/package/sitepull-cli.rpm:ro" \
             "${FEDORA_IMAGE}" \
@@ -414,8 +430,10 @@ jobs:
           test -s "dist/alpine/${apk_name}"
           test -s "dist/alpine/${key_name}"
           docker run --rm \
+            --init \
             --platform linux/amd64 \
             --security-opt seccomp=unconfined \
+            --shm-size=1g \
             --volume "${GITHUB_WORKSPACE}:/workspace:ro" \
             --volume "${GITHUB_WORKSPACE}/dist/alpine:/artifacts:ro" \
             --workdir /workspace \

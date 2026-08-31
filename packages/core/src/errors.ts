@@ -1,4 +1,5 @@
 import {
+  MAX_SITEPULL_ERROR_MESSAGE_LENGTH,
   SerializedSitepullErrorSchema,
   SitepullErrorCodeSchema,
   SitepullErrorStageSchema,
@@ -8,8 +9,24 @@ import {
   type SitepullErrorStage,
 } from '@sitepull/contracts';
 
-export { SerializedSitepullErrorSchema, SitepullErrorCodeSchema, SitepullErrorStageSchema };
+export {
+  MAX_SITEPULL_ERROR_MESSAGE_LENGTH,
+  SerializedSitepullErrorSchema,
+  SitepullErrorCodeSchema,
+  SitepullErrorStageSchema,
+};
 export type { SerializedSitepullError, SitepullErrorCode, SitepullErrorStage };
+
+const TRUNCATED_ERROR_MESSAGE_MARKER = '\n… [truncated] …\n';
+
+function boundedSerializedErrorMessage(message: string): string {
+  if (message === '') return 'Sitepull failed unexpectedly.';
+  if (message.length <= MAX_SITEPULL_ERROR_MESSAGE_LENGTH) return message;
+  const retainedLength = MAX_SITEPULL_ERROR_MESSAGE_LENGTH - TRUNCATED_ERROR_MESSAGE_MARKER.length;
+  const headLength = Math.ceil(retainedLength / 2);
+  const tailLength = Math.floor(retainedLength / 2);
+  return `${message.slice(0, headLength)}${TRUNCATED_ERROR_MESSAGE_MARKER}${message.slice(-tailLength)}`;
+}
 
 export interface SitepullErrorOptions {
   readonly code: SitepullErrorCode;
@@ -40,7 +57,7 @@ export class SitepullError extends Error {
     const serialized: SerializedSitepullError = {
       name: 'SitepullError',
       code: this.code,
-      message: this.message,
+      message: boundedSerializedErrorMessage(this.message),
       retryable: this.retryable,
     };
 

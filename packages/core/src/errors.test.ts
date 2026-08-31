@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  MAX_SITEPULL_ERROR_MESSAGE_LENGTH,
   SerializedSitepullErrorSchema,
   SitepullError,
   asSitepullError,
@@ -47,5 +48,49 @@ describe('SitepullError', () => {
     expect(wrapped.code).toBe('OUTPUT_NOT_WRITABLE');
     expect(wrapped.message).toBe('disk unavailable');
     expect(wrapped.cause).toBeInstanceOf(Error);
+  });
+
+  it('bounds serialized browser diagnostics to the shared contract limit', () => {
+    const error = new SitepullError({
+      code: 'CRAWL_FAILED',
+      message: 'browser stderr\n'.repeat(2_000),
+      stage: 'crawling-pages',
+      retryable: true,
+    });
+
+    expect(error.message.length).toBeGreaterThan(MAX_SITEPULL_ERROR_MESSAGE_LENGTH);
+    const serialized = error.toJSON();
+    expect(serialized.message).toHaveLength(MAX_SITEPULL_ERROR_MESSAGE_LENGTH);
+    expect(serialized.message).toContain('\n… [truncated] …\n');
+    expect(serialized.message).toMatch(/browser stderr\n$/u);
+    expect(SerializedSitepullErrorSchema.parse(serialized)).toEqual(serialized);
+  });
+
+  it('leaves messages at and below the contract boundary unchanged', () => {
+    for (const length of [
+      MAX_SITEPULL_ERROR_MESSAGE_LENGTH - 1,
+      MAX_SITEPULL_ERROR_MESSAGE_LENGTH,
+    ]) {
+      const message = 'x'.repeat(length);
+      const error = new SitepullError({ code: 'CRAWL_FAILED', message });
+
+      expect(error.toJSON().message).toBe(message);
+      expect(SerializedSitepullErrorSchema.parse(error.toJSON())).toEqual(error.toJSON());
+    }
+
+    const oversized = `HEAD${'x'.repeat(MAX_SITEPULL_ERROR_MESSAGE_LENGTH)}TAIL`;
+    const serialized = new SitepullError({ code: 'CRAWL_FAILED', message: oversized }).toJSON();
+    expect(serialized.message).toHaveLength(MAX_SITEPULL_ERROR_MESSAGE_LENGTH);
+    expect(serialized.message).toMatch(/^HEAD/u);
+    expect(serialized.message).toContain('\n… [truncated] …\n');
+    expect(serialized.message).toMatch(/TAIL$/u);
+  });
+
+  it('normalizes an empty error message before serialization', () => {
+    const error = new SitepullError({ code: 'INTERNAL_ERROR', message: '' });
+
+    expect(error.message).toBe('');
+    expect(error.toJSON().message).toBe('Sitepull failed unexpectedly.');
+    expect(SerializedSitepullErrorSchema.parse(error.toJSON())).toEqual(error.toJSON());
   });
 });

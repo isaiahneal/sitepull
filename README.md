@@ -274,13 +274,19 @@ pnpm make:linux:ubuntu24
 pnpm make:linux:debian12
 pnpm make:linux:debian13
 pnpm make:windows
+
+# Native headless Linux CLI packages
+scripts/build-fedora-cli-rpm.sh
+scripts/smoke-fedora-cli-rpm.sh
+scripts/build-alpine-cli-apk.sh
+scripts/smoke-alpine-cli-apk.sh
 ```
 
-The Fedora RPM and Alpine APK headless CLI builders run in pinned x64 containers through their target-specific scripts under `packaging/`. They create a production-only CLI dependency closure, native package metadata, and the global `/usr/bin/sitepull` launcher.
+The Fedora RPM and Alpine APK headless CLI builders use their target-specific scripts under `packaging/`. Fedora's production-only CLI closure is compiled on pinned Linux x64 Node/pnpm, proven free of native executables and embedded browsers inside Fedora 44, then assembled into the RPM there. Alpine builds its closure and signed APK inside Alpine 3.24. Both packages provide the global `/usr/bin/sitepull` launcher. Local Fedora RPM construction requires native x86_64; Apple-silicon maintainers use the native x64 GitHub distribution job for release proof.
 
 `pnpm make:linux` remains an alias for the Ubuntu 24.04 target. Run each Linux command on its named distribution: the build downloads that distribution's Playwright WebKit ABI and writes a uniquely revised DEB. Platform-specific unpacked build intermediates are also available through `pnpm package:mac`, `pnpm package:linux`, and `pnpm package:windows`. Forge writes output below `apps/desktop/out/`. Installing a Linux DEB safely establishes Electron's sandbox-helper ownership and permissions.
 
-Build each target on its native operating system and architecture. The repository's distribution workflow does exactly that on Apple-silicon and Intel macOS 15 runners, Ubuntu 24.04, Debian 12, Debian 13, Fedora 44, Alpine 3.24, and Windows. Distribution waits for the reusable quality workflow and verifies that a release tag exactly matches `package.json` plus a nonempty versioned release-notes file before any native build begins. External workflow actions and Linux build images are pinned to immutable identities. Each desktop runner verifies exact maker outputs, Electron fuse state, the packaged app's own Playwright module resolution, embedded WebKit launch, preload/IPC bridge, and renderer startup. macOS additionally verifies the bundle's internal ad-hoc signature consistency and the native architecture of both Electron and WebKit. The DEBs are clean-installed on their matching distributions, audited, and smoke-tested as unprivileged users. Fedora and Alpine independently build and clean-install their native CLI packages, verify global command and package identity, then complete a real one-page Sitepull capture through sandboxed system Chromium as an unprivileged user. The release gate rejects a missing or extra native asset before checksums, attestations, or publication.
+Build every desktop target on its native operating system and architecture. The repository's distribution workflow does exactly that on Apple-silicon and Intel macOS 15 runners, Ubuntu 24.04, Debian 12, Debian 13, and Windows. Distribution waits for the reusable quality workflow and verifies that a release tag exactly matches `package.json` plus a nonempty versioned release-notes file before any native build begins. External workflow actions and Linux build images are pinned to immutable identities. Each desktop runner verifies exact maker outputs, Electron fuse state, the packaged app's own Playwright module resolution, embedded WebKit launch, preload/IPC bridge, and renderer startup. macOS additionally verifies the bundle's internal ad-hoc signature consistency and the native architecture of both Electron and WebKit. The DEBs are clean-installed on their matching distributions, audited, and smoke-tested as unprivileged users. Fedora 44 and Alpine 3.24 independently assemble and clean-install their native CLI packages, verify global command and package identity, then complete a real one-page Sitepull capture through sandboxed system Chromium as an unprivileged user. Fedora additionally executes and audits its portable native-binary-free closure with Fedora Node before RPM construction. The release gate rejects a missing or extra native asset before checksums, attestations, or publication.
 
 ## Distribution trust
 
