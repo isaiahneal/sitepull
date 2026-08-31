@@ -81,6 +81,21 @@ describe('parsePullCommand', () => {
     ).toThrow(/supports chromium only/iu);
   });
 
+  it('rejects headed mode only when the package is headless-only', () => {
+    const headlessPackageEnvironment = { ...environment, headlessOnly: true } as const;
+
+    expect(() =>
+      parsePullCommand('example.com', { headed: true }, headlessPackageEnvironment),
+    ).toThrow(/headless-only.*remove --headed/iu);
+    expect(
+      parsePullCommand('example.com', { headless: true }, headlessPackageEnvironment).request.config
+        .headed,
+    ).toBe(false);
+    expect(
+      parsePullCommand('example.com', { headed: true }, environment).request.config.headed,
+    ).toBe(true);
+  });
+
   it('selects Full Capture when --zip is used without --ai-pack', () => {
     expect(parsePullCommand('https://example.com', { zip: true }, environment).exportMode).toBe(
       'full-capture',

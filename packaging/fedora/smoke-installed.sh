@@ -40,14 +40,20 @@ test "$(rpm -q --queryformat '%{ARCH}' sitepull-cli)" = x86_64
 requires="$(rpm -q --requires sitepull-cli)"
 grep -Eq '^nodejs24 >= 1:24' <<<"${requires}"
 grep -Eq '^nodejs24-bin >= 1:24' <<<"${requires}"
-grep -Fxq chromium <<<"${requires}"
+grep -Fxq chromium-headless <<<"${requires}"
 grep -Fxq ca-certificates <<<"${requires}"
 grep -Fxq google-noto-sans-vf-fonts <<<"${requires}"
 grep -Fxq google-noto-color-emoji-fonts <<<"${requires}"
 
-test "$(command -v sitepull)" = /usr/bin/sitepull
+sitepull_command="$(command -v sitepull)" || fail 'the global sitepull command is unavailable'
+canonical_sitepull_command="$(realpath "${sitepull_command}")" ||
+  fail "the global sitepull command cannot be resolved: ${sitepull_command}"
+canonical_sitepull_launcher="$(realpath /usr/bin/sitepull)" ||
+  fail 'the installed /usr/bin/sitepull launcher cannot be resolved'
+[[ "${canonical_sitepull_command}" == "${canonical_sitepull_launcher}" ]] ||
+  fail "the global sitepull command resolves to ${canonical_sitepull_command}, not ${canonical_sitepull_launcher}"
 test -x /usr/bin/sitepull
-test -x /usr/bin/chromium-browser
+test -x /usr/lib64/chromium-browser/headless_shell
 test -x /usr/bin/node
 test -r /usr/lib/sitepull-cli/dist/bin.js
 test -r /usr/lib/sitepull-cli/LICENSE
@@ -56,8 +62,11 @@ test -z "$(find /usr/lib/sitepull-cli/node_modules -type d -name prebuilds -prin
 # The installed wrapper must contain this literal assignment.
 # shellcheck disable=SC2016
 grep -Fq 'SITEPULL_SYSTEM_CHROMIUM="${SITEPULL_CHROMIUM}"' /usr/bin/sitepull
+grep -Fq 'SITEPULL_HEADLESS_ONLY=1' /usr/bin/sitepull
 grep -Fq 'chromiumSandbox: true' /usr/lib/sitepull-cli/node_modules/@sitepull/core/dist/index.js
 grep -Fq -- '--disable-software-rasterizer' \
+  /usr/lib/sitepull-cli/node_modules/@sitepull/core/dist/index.js
+grep -Fq -- '--use-gl=disabled' \
   /usr/lib/sitepull-cli/node_modules/@sitepull/core/dist/index.js
 rpm --verify sitepull-cli
 
@@ -71,6 +80,10 @@ if sitepull pull example.com --engine webkit --depth 0 --max-pages 1 --quiet >/t
   exit 1
 fi
 grep -Fqi 'supports chromium only' /tmp/sitepull-wrong-engine.stderr
+if sitepull pull example.com --headed --depth 0 --max-pages 1 --quiet >/tmp/sitepull-headed.stdout 2>/tmp/sitepull-headed.stderr; then
+  fail 'the headless-only Fedora package accepted --headed'
+fi
+grep -Fqi 'headless-only' /tmp/sitepull-headed.stderr
 
 readonly smoke_user=sitepull-smoke
 useradd --create-home "${smoke_user}"
@@ -80,7 +93,7 @@ if ! runuser -u "${smoke_user}" -- env \
     HOME="/home/${smoke_user}" \
     XDG_RUNTIME_DIR="/tmp/${smoke_user}-runtime" \
     SITEPULL_CLI_ROOT=/usr/lib/sitepull-cli \
-    SITEPULL_CHROMIUM=/usr/bin/chromium-browser \
+    SITEPULL_CHROMIUM=/usr/lib64/chromium-browser/headless_shell \
     node /workspace/packaging/chromium/assert-sandbox.mjs; then
   fail 'the installed Chromium sandbox is not fully active for the unprivileged CLI user'
 fi

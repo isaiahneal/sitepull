@@ -1,11 +1,11 @@
 #!/bin/sh
 set -eu
 
-readonly SITEPULL_CHROMIUM=/usr/bin/chromium-browser
+readonly SITEPULL_CHROMIUM=/usr/lib64/chromium-browser/headless_shell
 readonly SITEPULL_ENTRYPOINT=/usr/lib/sitepull-cli/dist/bin.js
 
 if [ ! -x "${SITEPULL_CHROMIUM}" ]; then
-  echo "sitepull: Fedora Chromium is missing at ${SITEPULL_CHROMIUM}" >&2
+  echo "sitepull: Fedora Chromium headless shell is missing at ${SITEPULL_CHROMIUM}" >&2
   exit 1
 fi
 if [ ! -r "${SITEPULL_ENTRYPOINT}" ]; then
@@ -14,4 +14,5 @@ if [ ! -r "${SITEPULL_ENTRYPOINT}" ]; then
 fi
 
 export SITEPULL_SYSTEM_CHROMIUM="${SITEPULL_CHROMIUM}"
+export SITEPULL_HEADLESS_ONLY=1
 exec /usr/bin/node "${SITEPULL_ENTRYPOINT}" "$@"

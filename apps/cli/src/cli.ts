@@ -26,6 +26,28 @@ export interface CliRuntime {
   readonly chromiumExecutablePath?: string;
 }
 
+export function cliRuntimeFromEnvironment(
+  environment: Readonly<Record<string, string | undefined>> = process.env,
+): CliRuntime {
+  const systemChromiumPath = environment.SITEPULL_SYSTEM_CHROMIUM?.trim();
+  const usesSystemChromium = systemChromiumPath !== undefined && systemChromiumPath !== '';
+  const headlessOnly = environment.SITEPULL_HEADLESS_ONLY?.trim() === '1';
+
+  if (!usesSystemChromium && !headlessOnly) return {};
+  return {
+    ...(usesSystemChromium ? { chromiumExecutablePath: systemChromiumPath } : {}),
+    parseEnvironment: {
+      ...(usesSystemChromium
+        ? {
+            defaultEngine: 'chromium' as const,
+            supportedEngines: ['chromium'] as const,
+          }
+        : {}),
+      ...(headlessOnly ? { headlessOnly: true } : {}),
+    },
+  };
+}
+
 const DEFAULT_IO: CliIo = {
   writeStdout: (text) => {
     process.stdout.write(text);
@@ -72,9 +94,10 @@ function messageFor(error: unknown): string {
 
 function configureCli(
   action: (url: unknown, options: RawPullOptions) => Promise<void>,
-  supportedEngines?: ParseEnvironment['supportedEngines'],
+  environment?: ParseEnvironment,
 ): CAC {
   const cli = cac('sitepull');
+  const supportedEngines = environment?.supportedEngines;
   const engineDescription =
     supportedEngines === undefined
       ? 'Rendering engine: webkit, chromium, or firefox'
@@ -87,7 +110,12 @@ function configureCli(
     .option('--engine <engine>', engineDescription)
     .option('--viewports <presets>', 'Comma-separated presets: desktop,mobile,tablet')
     .option('--include-subdomains', 'Permit crawling subdomains of the source host')
-    .option('--headed', 'Show the Playwright browser while capturing')
+    .option(
+      '--headed',
+      environment?.headlessOnly === true
+        ? 'Unavailable in this headless-only package'
+        : 'Show the Playwright browser while capturing',
+    )
     .option('--headless', 'Run without a visible browser window (the default)')
     .option('--timeout <seconds>', 'Per-page timeout in seconds (default: 30)')
     .option('--zip', 'Export a ZIP after capture')
@@ -137,7 +165,7 @@ export async function runCli(argv: readonly string[], runtime: CliRuntime = {}):
     } finally {
       removeSigint();
     }
-  }, runtime.parseEnvironment?.supportedEngines);
+  }, runtime.parseEnvironment);
 
   try {
     captureConsoleInfo(io.writeStdout, () => cli.parse([...argv], { run: false }));

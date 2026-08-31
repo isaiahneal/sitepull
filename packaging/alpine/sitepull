@@ -1,4 +1,5 @@
 #!/bin/sh
 
-export SITEPULL_SYSTEM_CHROMIUM=/usr/bin/chromium-browser
+export SITEPULL_SYSTEM_CHROMIUM=/usr/bin/chromium-headless-shell
+export SITEPULL_HEADLESS_ONLY=1
 exec /usr/bin/node /usr/lib/sitepull-cli/dist/bin.js "$@"

@@ -29,6 +29,9 @@ actual_packager="$(
 )"
 [ "$actual_packager" = "$expected_packager" ] ||
   fail "unexpected APK packager: $actual_packager"
+tar -xOf "$apk_path" .PKGINFO 2>/dev/null |
+  grep -Fxq 'depend = chromium-headless-shell' ||
+  fail 'APK metadata does not require the Alpine Chromium headless shell'
 
 alpine_release="$(cut -d. -f1,2 /etc/alpine-release 2>/dev/null || true)"
 [ "$alpine_release" = '3.24' ] || fail 'this audit must run on Alpine 3.24'
@@ -47,12 +50,21 @@ installed_version="$(
 [ "$installed_version" = "$expected_version-r0" ] ||
   fail "expected package version $expected_version-r0, installed $installed_version"
 
-[ "$(command -v sitepull)" = '/usr/bin/sitepull' ] || fail 'global launcher is unavailable'
+sitepull_command="$(command -v sitepull)" || fail 'the global sitepull command is unavailable'
+canonical_sitepull_command="$(realpath "$sitepull_command")" ||
+  fail "the global sitepull command cannot be resolved: $sitepull_command"
+canonical_sitepull_launcher="$(realpath /usr/bin/sitepull)" ||
+  fail 'the installed /usr/bin/sitepull launcher cannot be resolved'
+[ "$canonical_sitepull_command" = "$canonical_sitepull_launcher" ] ||
+  fail "the global sitepull command resolves to $canonical_sitepull_command, not $canonical_sitepull_launcher"
 [ "$(stat -c '%u:%g:%a' /usr/bin/sitepull)" = '0:0:755' ] ||
   fail 'global launcher must be root-owned mode 755'
-grep -Fqx 'export SITEPULL_SYSTEM_CHROMIUM=/usr/bin/chromium-browser' /usr/bin/sitepull ||
-  fail 'global launcher does not select Alpine Chromium'
-[ -x /usr/bin/chromium-browser ] || fail 'Alpine Chromium is unavailable'
+grep -Fqx 'export SITEPULL_SYSTEM_CHROMIUM=/usr/bin/chromium-headless-shell' /usr/bin/sitepull ||
+  fail 'global launcher does not select the Alpine Chromium headless shell'
+grep -Fqx 'export SITEPULL_HEADLESS_ONLY=1' /usr/bin/sitepull ||
+  fail 'global launcher does not enforce headless-only operation'
+[ -x /usr/bin/chromium-headless-shell ] || fail 'Alpine Chromium headless shell is unavailable'
+apk info --exists chromium-headless-shell || fail 'Alpine Chromium headless shell package is unavailable'
 [ -r /usr/lib/sitepull-cli/node_modules/@sitepull/core/dist/index.js ] ||
   fail 'deployed Sitepull core is unavailable'
 grep -Fq 'chromiumSandbox: true' \
@@ -61,6 +73,9 @@ grep -Fq 'chromiumSandbox: true' \
 grep -Fq -- '--disable-software-rasterizer' \
   /usr/lib/sitepull-cli/node_modules/@sitepull/core/dist/index.js ||
   fail 'deployed Chromium launch policy does not disable unsafe 3D software rendering'
+grep -Fq -- '--use-gl=disabled' \
+  /usr/lib/sitepull-cli/node_modules/@sitepull/core/dist/index.js ||
+  fail 'deployed Chromium launch policy does not disable its GL implementation'
 embedded_browser_directory="$(
   find /usr/lib/sitepull-cli -type d \
     \( -name '.local-browsers' -o -name '.playwright-browsers' \) \
@@ -91,7 +106,7 @@ install -d -m700 -o "$smoke_user" -g "$smoke_user" "$runtime_dir"
 chown "$smoke_user:$smoke_user" "$capture_root"
 
 if ! su "$smoke_user" -s /bin/sh -c \
-  "HOME='$smoke_home' XDG_RUNTIME_DIR='$runtime_dir' SITEPULL_CLI_ROOT=/usr/lib/sitepull-cli SITEPULL_CHROMIUM=/usr/bin/chromium-browser node /workspace/packaging/chromium/assert-sandbox.mjs"; then
+  "HOME='$smoke_home' XDG_RUNTIME_DIR='$runtime_dir' SITEPULL_CLI_ROOT=/usr/lib/sitepull-cli SITEPULL_CHROMIUM=/usr/bin/chromium-headless-shell node /workspace/packaging/chromium/assert-sandbox.mjs"; then
   fail 'the installed Chromium sandbox is not fully active for the unprivileged CLI user'
 fi
 
@@ -102,6 +117,14 @@ if su "$smoke_user" -s /bin/sh -c \
 fi
 grep -Fqi 'supports chromium only' "$capture_root/wrong-engine.stderr" ||
   fail 'the unsupported-engine error was not actionable'
+
+if su "$smoke_user" -s /bin/sh -c \
+  "HOME='$smoke_home' XDG_RUNTIME_DIR='$runtime_dir' sitepull pull example.com --headed --depth 0 --max-pages 1 --output '$capture_root' --quiet" \
+  >"$capture_root/headed.stdout" 2>"$capture_root/headed.stderr"; then
+  fail 'the headless-only Alpine package accepted --headed'
+fi
+grep -Fqi 'headless-only' "$capture_root/headed.stderr" ||
+  fail 'the unsupported-headed error was not actionable'
 
 capture_stdout="$capture_root/capture.stdout"
 capture_stderr="$capture_root/capture.stderr"

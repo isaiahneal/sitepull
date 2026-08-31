@@ -11,13 +11,14 @@ describe('untrusted browser launch policy', () => {
     });
   });
 
-  it('keeps headless system Chromium off the unsafe 3D software-rendering path', () => {
+  it('keeps headless system Chromium off every unsafe 3D software-rendering path', () => {
     expect(untrustedBrowserLaunchOptions('chromium', false, { systemChromium: true })).toEqual({
       headless: true,
       chromiumSandbox: true,
       args: [
         '--disable-quic',
         '--force-webrtc-ip-handling-policy=disable_non_proxied_udp',
+        '--use-gl=disabled',
         '--disable-software-rasterizer',
       ],
       ignoreDefaultArgs: ['--enable-unsafe-swiftshader'],

@@ -29,7 +29,7 @@ The output combines rendered HTML, semantic DOM summaries, delivered resources, 
 - A native desktop inspector with searchable history, saved capture recipes, **Capture Again**, and Overview, Pages, Design, Components, Assets, Files, and Logs workspaces
 - A first-class, script-friendly CLI that is headless by default
 
-WebKit is the default and bundled desktop rendering engine. Chromium and Firefox are optional for CLI/source-development captures when their Playwright browser packages are installed. The Fedora and Alpine native CLI packages instead use each distribution's maintained Chromium build; those packages support the Chromium engine only.
+WebKit is the default and bundled desktop rendering engine. Chromium and Firefox are optional for CLI/source-development captures when their Playwright browser packages are installed. The Fedora and Alpine native CLI packages instead use each distribution's maintained Chromium headless shell; those packages are headless-only and support the Chromium engine only.
 
 ## Get Sitepull
 
@@ -43,7 +43,7 @@ Release packages are published on the [GitHub Releases page](https://github.com/
 - Fedora 44 x64: native headless CLI RPM
 - Alpine 3.24 x64: native headless CLI APK and release signing key
 
-Each desktop package contains its own Playwright WebKit runtime. Fedora and Alpine install `sitepull` globally at `/usr/bin/sitepull` and use the distribution's native Chromium package, avoiding an unsupported Ubuntu/glibc browser transplant. Release artifacts are built and clean-install tested against their named operating system.
+Each desktop package contains its own Playwright WebKit runtime. Fedora and Alpine install `sitepull` globally at `/usr/bin/sitepull` and use the distribution's native Chromium headless-shell package, avoiding an unsupported Ubuntu/glibc browser transplant. Release artifacts are built and clean-install tested against their named operating system.
 
 The community `v0.4.0` artifacts are not backed by Apple Developer ID, Microsoft Authenticode, or a persistent Linux repository key. See [Distribution trust](#distribution-trust) before installing a release artifact.
 
@@ -54,7 +54,7 @@ Packaged desktop builds include Node/Electron and the matching Playwright WebKit
 - Node.js `24.20.0` (current LTS line used by this release)
 - pnpm `11.24.0`
 - macOS 15+, Windows x64, Ubuntu 24.04 x64, Debian 12 x64, or Debian 13 x64 for a packaged desktop build
-- Fedora 44 x64 or Alpine 3.24 x64 for a native system-Chromium CLI package
+- Fedora 44 x64 or Alpine 3.24 x64 for a native Chromium headless-shell CLI package
 - Xcode Command Line Tools for local macOS DMG creation
 - `fakeroot` for local Ubuntu or Debian DEB creation
 
@@ -69,17 +69,22 @@ sudo dnf install ./sitepull-cli-0.4.0-1.fc44.x86_64.rpm
 sitepull pull example.com --headless --ai-pack --zip
 ```
 
-On Alpine 3.24, download both the APK and its release-specific public key. Install the attested key before the signed package:
+On Alpine 3.24, download both the APK and its release-specific public key. From a root shell (for example, `su -`, or `doas` when configured), install the attested key before the signed package:
 
 ```bash
-sudo install -m 0644 sitepull-alpine-v0.4.0.rsa.pub /etc/apk/keys/
-sudo apk add ./sitepull-cli-0.4.0-r0.apk
+install -m 0644 sitepull-alpine-v0.4.0.rsa.pub /etc/apk/keys/
+apk add ./sitepull-cli-0.4.0-r0.apk
+```
+
+Then run Sitepull as your regular user:
+
+```bash
 sitepull pull example.com --headless --ai-pack --zip
 ```
 
-Both packages install Node.js 24 and Chromium through the native package manager and place `sitepull` on the system `PATH`. They intentionally default to and permit only `--engine chromium`; Playwright WebKit and Electron are not native to Alpine/musl, and Playwright's current WebKit build does not match Fedora 44's browser-library ABI.
+Both packages install Node.js 24 and the distribution-maintained Chromium headless shell through the native package manager, then place `sitepull` on the system `PATH`. They intentionally permit only `--engine chromium` and reject `--headed`; Playwright WebKit and Electron are not native to Alpine/musl, and Playwright's current WebKit build does not match Fedora 44's browser-library ABI.
 
-Headless system-Chromium captures disable its 3D software rasterizer and Playwright's unsafe SwiftShader opt-in. DOM, CSS, Canvas 2D, and normal screenshots remain available, but WebGL content is not rendered by these GPU-less native CLI packages. This keeps arbitrary captured pages away from Chromium's lower-security SwiftShader path while avoiding distro-browser crashes on headless hosts. Explicit headed system-Chromium captures retain the host's normal graphics path.
+The clean-install gates launch the shell as an unprivileged user and require the actual renderer process to add its own seccomp filter beyond the outer build container, enable the no-new-privileges boundary, and enter isolated PID, network, and user namespaces before attempting a live capture. They also require the GPU process to add its own seccomp filter, disable Chromium's GL implementation and 3D software rasterizer, and filter Playwright's unsafe SwiftShader opt-in. Alpine currently installs `chromium-swiftshader` as a dependency of its headless shell, but Sitepull does not select it at runtime and the native gate rejects any SwiftShader/ANGLE process argument. DOM, CSS, Canvas 2D, and normal screenshots remain available, but WebGL content is not rendered by these GPU-less native CLI packages. This keeps arbitrary captured pages away from Chromium's lower-security SwiftShader path without weakening the browser sandbox.
 
 ## Installation from source
 
@@ -142,7 +147,7 @@ sitepull pull example.com \
   --zip
 ```
 
-Headless is the default. Use `--headed` when you intentionally want to watch the Playwright browser; `--headless` and `--headed` are mutually exclusive.
+Headless is the default. Use `--headed` when you intentionally want to watch the Playwright browser; `--headless` and `--headed` are mutually exclusive. The Fedora and Alpine native CLI packages are intentionally headless-only and reject `--headed`.
 
 Available options:
 
@@ -284,11 +289,11 @@ scripts/build-alpine-cli-apk.sh
 scripts/smoke-alpine-cli-apk.sh
 ```
 
-The Fedora RPM and Alpine APK headless CLI builders use their target-specific scripts under `packaging/`. Fedora's production-only CLI closure is compiled on pinned Linux x64 Node/pnpm, proven free of native executables and embedded browsers inside Fedora 44, then assembled into the RPM there. Alpine builds its closure and signed APK inside Alpine 3.24. Both packages provide the global `/usr/bin/sitepull` launcher. Their effective-sandbox smoke scripts require a native x86_64 Docker engine because CPU emulation cannot validate Chromium's inner seccomp layer; Apple-silicon maintainers use the native x64 GitHub distribution job for release proof.
+The Fedora RPM and Alpine APK headless CLI builders use their target-specific scripts under `packaging/`. Fedora's production-only CLI closure is compiled on pinned Linux x64 Node/pnpm, proven free of native executables and embedded browsers inside Fedora 44, then assembled into the RPM there. Alpine builds its closure and signed APK inside Alpine 3.24. Both packages provide the global `/usr/bin/sitepull` launcher and use their distribution-maintained Chromium headless shell. Their effective-sandbox smoke scripts require a native x86_64 Docker engine because CPU emulation cannot validate Chromium's inner seccomp and namespace layers; Apple-silicon maintainers use the native x64 GitHub distribution job for release proof.
 
 `pnpm make:linux` remains an alias for the Ubuntu 24.04 target. Run each Linux command on its named distribution: the build downloads that distribution's Playwright WebKit ABI and writes a uniquely revised DEB. Platform-specific unpacked build intermediates are also available through `pnpm package:mac`, `pnpm package:linux`, and `pnpm package:windows`. Forge writes output below `apps/desktop/out/`. Installing a Linux DEB safely establishes Electron's sandbox-helper ownership and permissions.
 
-Build every desktop target on its native operating system and architecture. The repository's distribution workflow does exactly that on Apple-silicon and Intel macOS 15 runners, Ubuntu 24.04, Debian 12, Debian 13, and Windows. Distribution waits for the reusable quality workflow and verifies that a release tag exactly matches `package.json` plus a nonempty versioned release-notes file before any native build begins. External workflow actions and Linux build images are pinned to immutable identities. Each desktop runner verifies exact maker outputs, Electron fuse state, the packaged app's own Playwright module resolution, embedded WebKit launch, preload/IPC bridge, and renderer startup. macOS additionally verifies the bundle's internal ad-hoc signature consistency and the native architecture of both Electron and WebKit. The DEBs are clean-installed on their matching distributions, audited, and smoke-tested as unprivileged users. Fedora 44 and Alpine 3.24 independently assemble and clean-install their native CLI packages, verify global command and package identity, then complete a real one-page Sitepull capture through sandboxed system Chromium as an unprivileged user. Fedora additionally executes and audits its portable native-binary-free closure with Fedora Node before RPM construction. The release gate rejects a missing or extra native asset before checksums, attestations, or publication.
+Build every desktop target on its native operating system and architecture. The repository's distribution workflow does exactly that on Apple-silicon and Intel macOS 15 runners, Ubuntu 24.04, Debian 12, Debian 13, and Windows. Distribution waits for the reusable quality workflow and verifies that a release tag exactly matches `package.json` plus a nonempty versioned release-notes file before any native build begins. External workflow actions and Linux build images are pinned to immutable identities. Each desktop runner verifies exact maker outputs, Electron fuse state, the packaged app's own Playwright module resolution, embedded WebKit launch, preload/IPC bridge, and renderer startup. macOS additionally verifies the bundle's internal ad-hoc signature consistency and the native architecture of both Electron and WebKit. The DEBs are clean-installed on their matching distributions, audited, and smoke-tested as unprivileged users. Fedora 44 and Alpine 3.24 independently assemble and clean-install their native CLI packages, verify global command and package identity, prove the live renderer's added seccomp filter plus PID/network/user namespace isolation, then complete a real one-page Sitepull capture through the sandboxed distro Chromium headless shell as an unprivileged user. Fedora additionally executes and audits its portable native-binary-free closure with Fedora Node before RPM construction. The release gate rejects a missing or extra native asset before checksums, attestations, or publication.
 
 ## Distribution trust
 
@@ -314,7 +319,7 @@ An attestation proves which repository and workflow produced the exact bytes; it
 - Playwright WebKit is useful for Safari-adjacent behavior, but it is not the Safari application.
 - Packaged desktop builds intentionally embed only WebKit; Chromium and Firefox remain optional CLI/source-development engines.
 - Packaged Linux desktops are targeted and clean-install tested on Ubuntu 24.04, Debian 12, and Debian 13 x64. Use the DEB named for the installed distribution; their WebKit ABIs and package dependencies are intentionally distinct. A generic Linux desktop ZIP is not published because an archive cannot safely install Electron's root-owned setuid sandbox helper.
-- Fedora 44 and Alpine 3.24 are supported by native x64 headless CLI packages backed by their maintained system Chromium. They do not include the Electron desktop inspector or claim WebKit/Safari fidelity. Alpine's musl ABI cannot run the official Electron or Playwright WebKit binaries, while Fedora 44's ICU, JPEG, and media-library ABIs do not match Playwright's Ubuntu WebKit build.
+- Fedora 44 and Alpine 3.24 are supported by native x64 headless-only CLI packages backed by their maintained Chromium headless shells. They reject `--headed`, do not include the Electron desktop inspector, and do not claim WebKit/Safari fidelity or WebGL capture. Alpine's musl ABI cannot run the official Electron or Playwright WebKit binaries, while Fedora 44's ICU, JPEG, and media-library ABIs do not match Playwright's Ubuntu WebKit build.
 - WebKit page workers are disabled during capture so worker-only WebTransport cannot bypass the validated HTTP proxy. Sites that require dedicated/shared workers for rendering may lose that worker-driven behavior; Chromium and Firefox instead use engine-level non-proxied transport restrictions.
 - Resource-body capture defaults to 25 MiB per response, 512 MiB across the capture, and three concurrent body reads. Responses without a trustworthy content length still require one complete in-memory Playwright buffer before their actual size can be enforced.
 - Responsive screenshots reuse one stabilized page and resize it through the configured viewports. DOM/computed-style evidence is extracted at the first configured viewport, so JavaScript or server behavior selected only during an initial viewport-specific load requires a separate capture.

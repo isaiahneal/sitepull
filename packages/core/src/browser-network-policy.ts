@@ -42,7 +42,9 @@ export function untrustedBrowserLaunchOptions(
       args: [
         '--disable-quic',
         '--force-webrtc-ip-handling-policy=disable_non_proxied_udp',
-        ...(systemChromium && !headed ? ['--disable-software-rasterizer'] : []),
+        ...(systemChromium && !headed
+          ? ['--use-gl=disabled', '--disable-software-rasterizer']
+          : []),
       ],
       ...(systemChromium ? { ignoreDefaultArgs: ['--enable-unsafe-swiftshader'] } : {}),
     };

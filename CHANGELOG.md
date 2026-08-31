@@ -6,9 +6,9 @@ All notable Sitepull releases are documented here.
 
 ### Added
 
-- Native Fedora 44 x64 RPM and Alpine 3.24 x64 APK packages for the headless CLI, each installing the global `/usr/bin/sitepull` command and using the distribution-maintained Chromium browser
-- A controlled system-Chromium runtime path with an absolute executable check, Chromium-only package policy, and OS browser sandbox enforcement
-- Clean-install Fedora and Alpine gates that verify native package identity, Node/Chromium dependencies, global command resolution, unprivileged sandboxed launch, and a real one-page Sitepull capture
+- Native Fedora 44 x64 RPM and Alpine 3.24 x64 APK packages for the headless CLI, each installing the global `/usr/bin/sitepull` command and using the distribution-maintained Chromium headless shell
+- A controlled system-Chromium runtime path with an absolute executable check, Chromium-only and headless-only package policy, and OS browser sandbox enforcement
+- Clean-install Fedora and Alpine gates that verify native package identity, Node/Chromium dependencies, global command resolution, the renderer's added seccomp filter and PID/network/user namespace isolation, and a real one-page Sitepull capture
 - A release-specific Alpine APK signing key published and attested beside the signed package
 
 ### Changed
@@ -20,12 +20,13 @@ All notable Sitepull releases are documented here.
 
 - Per-user global CLI deployments are now physically copied out of pnpm's workspace deployment, kept immutable by version, and selected through an atomic command cutover, so a later source build or failed upgrade cannot alter or strand an installed version
 - Oversized Playwright and browser-process diagnostics are now bounded only when serialized into capture evidence, preserving useful head-and-tail context without allowing a schema error to hide the original capture failure
+- Fedora and Alpine now use their distro-maintained Chromium headless shells, keeping Alpine's full-browser GPU sandbox-policy mismatch out of the capture path without disabling the GPU or seccomp sandboxes
 - Headless system-Chromium captures now avoid the unstable and lower-security SwiftShader 3D software-rendering path while retaining sandboxed DOM, CSS, Canvas 2D, and screenshot capture on Fedora and Alpine
 
 ### Compatibility
 
 - Packaged support now covers macOS 15+ on Apple silicon and Intel, Ubuntu 24.04 x64, Debian 12/13 x64, Fedora 44 x64, Alpine 3.24 x64, and Windows x64
-- Fedora and Alpine receive native headless CLI packages with Chromium rather than desktop/WebKit packages: Alpine's musl ABI cannot run official Electron or Playwright WebKit binaries, and Fedora 44 does not match Playwright's Ubuntu WebKit library ABI
+- Fedora and Alpine receive native headless-only CLI packages with Chromium rather than desktop/WebKit packages: Alpine's musl ABI cannot run official Electron or Playwright WebKit binaries, and Fedora 44 does not match Playwright's Ubuntu WebKit library ABI
 
 ## [0.3.1] - 2026-08-31
 

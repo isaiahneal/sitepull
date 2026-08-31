@@ -1,7 +1,13 @@
 import type { CaptureResultSummary } from '@sitepull/contracts';
 import { describe, expect, it } from 'vitest';
 
-import { runCli, SITEPULL_VERSION, type CliIo, type SignalSource } from './cli.js';
+import {
+  cliRuntimeFromEnvironment,
+  runCli,
+  SITEPULL_VERSION,
+  type CliIo,
+  type SignalSource,
+} from './cli.js';
 import type { PullDependencies } from './pull.js';
 
 function completedSummary(): CaptureResultSummary {
@@ -55,6 +61,24 @@ function successfulDependencies(): PullDependencies {
 }
 
 describe('runCli', () => {
+  it('derives native-package capabilities from explicit environment flags', () => {
+    expect(
+      cliRuntimeFromEnvironment({
+        SITEPULL_SYSTEM_CHROMIUM: ' /usr/bin/chromium-browser ',
+        SITEPULL_HEADLESS_ONLY: '1',
+      }),
+    ).toEqual({
+      chromiumExecutablePath: '/usr/bin/chromium-browser',
+      parseEnvironment: {
+        defaultEngine: 'chromium',
+        supportedEngines: ['chromium'],
+        headlessOnly: true,
+      },
+    });
+    expect(cliRuntimeFromEnvironment({})).toEqual({});
+    expect(cliRuntimeFromEnvironment({ SITEPULL_HEADLESS_ONLY: '0' })).toEqual({});
+  });
+
   it('prints only the final path to stdout in quiet mode', async () => {
     const output = captureIo();
     const exitCode = await runCli(['node', 'sitepull', 'pull', 'https://example.com', '--quiet'], {
@@ -254,11 +278,35 @@ describe('runCli', () => {
         parseEnvironment: {
           defaultEngine: 'chromium',
           supportedEngines: ['chromium'],
+          headlessOnly: true,
         },
         chromiumExecutablePath: '/usr/bin/chromium-browser',
       }),
     ).toBe(0);
     expect(output.stdout()).toContain('Rendering engine for this package: chromium');
     expect(output.stdout()).not.toContain('webkit, chromium, or firefox');
+    expect(output.stdout()).toContain('Unavailable in this headless-only package');
+  });
+
+  it('rejects headed capture in a headless-only package without running a capture', async () => {
+    const output = captureIo();
+    let captureStarted = false;
+    const dependencies: PullDependencies = {
+      ...successfulDependencies(),
+      runCapture: () => {
+        captureStarted = true;
+        return Promise.reject(new Error('capture must not start'));
+      },
+    };
+
+    expect(
+      await runCli(['node', 'sitepull', 'pull', 'example.com', '--headed'], {
+        io: output.io,
+        pullDependencies: dependencies,
+        parseEnvironment: { headlessOnly: true },
+      }),
+    ).toBe(2);
+    expect(captureStarted).toBe(false);
+    expect(output.stderr()).toMatch(/headless-only.*remove --headed/isu);
   });
 });

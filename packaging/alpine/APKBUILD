@@ -8,7 +8,7 @@ arch="x86_64"
 license="MIT"
 depends="
 	ca-certificates
-	chromium
+	chromium-headless-shell
 	font-liberation
 	font-noto
 	font-noto-cjk

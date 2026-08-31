@@ -39,6 +39,7 @@ export interface ParseEnvironment {
   readonly currentDirectory?: string;
   readonly defaultEngine?: BrowserEngine;
   readonly supportedEngines?: readonly BrowserEngine[];
+  readonly headlessOnly?: boolean;
 }
 
 export class UsageError extends Error {
@@ -202,6 +203,11 @@ export function parsePullCommand(
 
   if (aiPack && !zip) throw new UsageError('--ai-pack requires --zip.');
   if (headed && headless) throw new UsageError('--headed and --headless cannot be used together.');
+  if (environment.headlessOnly === true && headed) {
+    throw new UsageError(
+      'This Sitepull package is headless-only; remove --headed (headless mode is the default).',
+    );
+  }
 
   const request = CrawlRequestSchema.safeParse({
     url: normalizedInput.url,
