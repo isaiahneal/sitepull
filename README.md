@@ -13,6 +13,39 @@ The output combines rendered HTML, semantic DOM summaries, delivered resources, 
 
 ![Sitepull desktop interface](docs/sitepull-desktop.png)
 
+## Quick install
+
+The release installer detects the supported operating system, version, and CPU architecture; selects the matching GitHub Release package; and verifies the package against the release's `SHA256SUMS.txt` before installing it.
+
+macOS or Linux:
+
+```bash
+curl -fsSLo /tmp/sitepull-install.sh \
+  https://github.com/isaiahneal/sitepull/releases/latest/download/sitepull-install.sh
+sh /tmp/sitepull-install.sh
+```
+
+Minimal Alpine installations can use `wget` when `curl` is not installed:
+
+```sh
+wget -qO /tmp/sitepull-install.sh \
+  https://github.com/isaiahneal/sitepull/releases/latest/download/sitepull-install.sh
+sh /tmp/sitepull-install.sh
+```
+
+Windows PowerShell:
+
+```powershell
+irm https://github.com/isaiahneal/sitepull/releases/latest/download/sitepull-install.ps1 `
+  -OutFile "$env:TEMP\sitepull-install.ps1"
+powershell -NoProfile -ExecutionPolicy Bypass `
+  -File "$env:TEMP\sitepull-install.ps1"
+```
+
+`ExecutionPolicy Bypass` applies only to that installer process; it does not change the machine's PowerShell policy. The quick installer installs the desktop application on macOS, Ubuntu, Debian, and Windows. On Fedora and Alpine it installs the native headless-only CLI globally as `sitepull`. Use `--dry-run` (PowerShell: `-DryRun`) to preview the exact selection without network or filesystem changes, or `--version 0.4.1` (PowerShell: `-Version 0.4.1`) to pin a release.
+
+Prefer to install by hand? Every package, checksum, and provenance record remains available on the [GitHub Releases page](https://github.com/isaiahneal/sitepull/releases/latest). These are community builds without Apple Developer ID or Microsoft Authenticode signing; review [Distribution trust](#distribution-trust) for the operating-system prompts and verification options.
+
 ## Highlights
 
 - Hydrated, rendered HTML and visible semantic elements with reconstruction-focused computed styles
@@ -31,7 +64,7 @@ The output combines rendered HTML, semantic DOM summaries, delivered resources, 
 
 WebKit is the default and bundled desktop rendering engine. Chromium and Firefox are optional for CLI/source-development captures when their Playwright browser packages are installed. The Fedora and Alpine native CLI packages instead use each distribution's maintained Chromium headless shell; those packages are headless-only and support the Chromium engine only.
 
-## Get Sitepull
+## Packages and platform support
 
 Release packages are published on the [GitHub Releases page](https://github.com/isaiahneal/sitepull/releases):
 
@@ -45,7 +78,7 @@ Release packages are published on the [GitHub Releases page](https://github.com/
 
 Each desktop package contains its own Playwright WebKit runtime. Fedora and Alpine install `sitepull` globally at `/usr/bin/sitepull` and use the distribution's native Chromium headless-shell package, avoiding an unsupported Ubuntu/glibc browser transplant. Release artifacts are built and clean-install tested against their named operating system.
 
-The community `v0.4.0` artifacts are not backed by Apple Developer ID, Microsoft Authenticode, or a persistent Linux repository key. See [Distribution trust](#distribution-trust) before installing a release artifact.
+The community `v0.4.1` artifacts are not backed by Apple Developer ID, Microsoft Authenticode, or a persistent Linux repository key. See [Distribution trust](#distribution-trust) before installing a release artifact.
 
 ## Requirements
 
@@ -65,15 +98,15 @@ Chromium and Firefox are optional CLI/development engines and require their corr
 On Fedora 44, download the RPM from the current release and install it with DNF:
 
 ```bash
-sudo dnf install ./sitepull-cli-0.4.0-1.fc44.x86_64.rpm
+sudo dnf install ./sitepull-cli-0.4.1-1.fc44.x86_64.rpm
 sitepull pull example.com --headless --ai-pack --zip
 ```
 
 On Alpine 3.24, download both the APK and its release-specific public key. From a root shell (for example, `su -`, or `doas` when configured), install the attested key before the signed package:
 
 ```bash
-install -m 0644 sitepull-alpine-v0.4.0.rsa.pub /etc/apk/keys/
-apk add ./sitepull-cli-0.4.0-r0.apk
+install -m 0644 sitepull-alpine-v0.4.1.rsa.pub /etc/apk/keys/
+apk add ./sitepull-cli-0.4.1-r0.apk
 ```
 
 Then run Sitepull as your regular user:
@@ -86,7 +119,7 @@ Both packages install Node.js 24 and the distribution-maintained Chromium headle
 
 The clean-install gates launch the shell as an unprivileged user and require the actual renderer process to add its own seccomp filter beyond the outer build container, enable the no-new-privileges boundary, and enter isolated PID, network, and user namespaces before attempting a live capture. They also require the GPU process to add its own seccomp filter, disable Chromium's GL implementation and 3D software rasterizer, and filter Playwright's unsafe SwiftShader opt-in. Alpine currently installs `chromium-swiftshader` as a dependency of its headless shell, but Sitepull does not select it at runtime and the native gate rejects any SwiftShader/ANGLE process argument. DOM, CSS, Canvas 2D, and normal screenshots remain available, but WebGL content is not rendered by these GPU-less native CLI packages. This keeps arbitrary captured pages away from Chromium's lower-security SwiftShader path without weakening the browser sandbox.
 
-## Installation from source
+## Development from source
 
 Sitepull development uses Node.js 24 LTS and pnpm 11:
 
@@ -293,18 +326,18 @@ The Fedora RPM and Alpine APK headless CLI builders use their target-specific sc
 
 `pnpm make:linux` remains an alias for the Ubuntu 24.04 target. Run each Linux command on its named distribution: the build downloads that distribution's Playwright WebKit ABI and writes a uniquely revised DEB. Platform-specific unpacked build intermediates are also available through `pnpm package:mac`, `pnpm package:linux`, and `pnpm package:windows`. Forge writes output below `apps/desktop/out/`. Installing a Linux DEB safely establishes Electron's sandbox-helper ownership and permissions.
 
-Build every desktop target on its native operating system and architecture. The repository's distribution workflow does exactly that on Apple-silicon and Intel macOS 15 runners, Ubuntu 24.04, Debian 12, Debian 13, and Windows. Distribution waits for the reusable quality workflow and verifies that a release tag exactly matches `package.json` plus a nonempty versioned release-notes file before any native build begins. External workflow actions and Linux build images are pinned to immutable identities. Each desktop runner verifies exact maker outputs, Electron fuse state, the packaged app's own Playwright module resolution, embedded WebKit launch, preload/IPC bridge, and renderer startup. macOS additionally verifies the bundle's internal ad-hoc signature consistency and the native architecture of both Electron and WebKit. The DEBs are clean-installed on their matching distributions, audited, and smoke-tested as unprivileged users. Fedora 44 and Alpine 3.24 independently assemble and clean-install their native CLI packages, verify global command and package identity, prove the live renderer's added seccomp filter plus PID/network/user namespace isolation, then complete a real one-page Sitepull capture through the sandboxed distro Chromium headless shell as an unprivileged user. Fedora additionally executes and audits its portable native-binary-free closure with Fedora Node before RPM construction. The release gate rejects a missing or extra native asset before checksums, attestations, or publication.
+Build every desktop target on its native operating system and architecture. The repository's distribution workflow does exactly that on Apple-silicon and Intel macOS 15 runners, Ubuntu 24.04, Debian 12, Debian 13, and Windows. Distribution waits for the reusable quality workflow and verifies that a release tag exactly matches `package.json` plus a nonempty versioned release-notes file before any native build begins. External workflow actions and Linux build images are pinned to immutable identities. Each desktop runner verifies exact maker outputs, Electron fuse state, the packaged app's own Playwright module resolution, embedded WebKit launch, preload/IPC bridge, and renderer startup. macOS additionally verifies the bundle's internal ad-hoc signature consistency and the native architecture of both Electron and WebKit. The DEBs are clean-installed on their matching distributions, audited, and smoke-tested as unprivileged users. Fedora 44 and Alpine 3.24 independently assemble and clean-install their native CLI packages, verify global command and package identity, prove the live renderer's added seccomp filter plus PID/network/user namespace isolation, then complete a real one-page Sitepull capture through the sandboxed distro Chromium headless shell as an unprivileged user. Fedora additionally executes and audits its portable native-binary-free closure with Fedora Node before RPM construction. The release gate rejects a missing or extra package or installer before checksums, attestations, or publication.
 
 ## Distribution trust
 
-Electron fuses harden every package. Local macOS packages are re-signed ad hoc after fuse mutation and verified for internal signature consistency, but ad-hoc signing is not an Apple Developer ID signature and cannot be notarized. The community artifacts do not claim hardened runtime, and Sitepull does not weaken the bundle with the disable-library-validation entitlement. A hardened-runtime, notarized macOS distribution requires an Apple Developer identity and notarization credentials.
+Electron fuses harden every package. Local macOS packages are stripped of AppleDouble sidecars, re-signed ad hoc after fuse mutation, and verified for internal signature consistency both before and after DMG creation. The quick installer verifies that seal again before replacing an existing app. Ad-hoc signing is not an Apple Developer ID signature and cannot be notarized. The community artifacts do not claim hardened runtime, and Sitepull does not weaken the bundle with the disable-library-validation entitlement. A hardened-runtime, notarized macOS distribution requires an Apple Developer identity and notarization credentials.
 
-Windows packages likewise require an Authenticode certificate for publisher trust, and Linux packages require a persistent repository/package-signing workflow for durable publisher trust. Those private credentials are intentionally absent from this public repository and its `v0.4.0` community builds. The Alpine APK is signed by a release-specific key published beside it; verify the key's checksum and GitHub provenance before installing it. That key authenticates the matching release artifact, but it is not a long-lived Alpine repository identity.
+Windows packages likewise require an Authenticode certificate for publisher trust, and Linux packages require a persistent repository/package-signing workflow for durable publisher trust. Those private credentials are intentionally absent from this public repository and its `v0.4.1` community builds. The Alpine APK is signed by a release-specific key published beside it; verify the key's checksum and GitHub provenance before installing it. That key authenticates the matching release artifact, but it is not a long-lived Alpine repository identity.
 
-For tagged releases produced by the current workflow, GitHub Actions generates `SHA256SUMS.txt`, verifies that it covers and matches every staged asset before publication, and records Sigstore-backed SLSA provenance attestations for every native asset and for the checksum manifest itself. After downloading an asset, verify its provenance with GitHub CLI:
+For tagged releases produced by the current workflow, GitHub Actions requires exactly fourteen native packages plus the two quick installers, generates `SHA256SUMS.txt`, verifies that it covers and matches all sixteen payloads before publication, and records Sigstore-backed SLSA provenance attestations for every release asset and for the checksum manifest itself. After downloading an asset, verify its provenance with GitHub CLI:
 
 ```bash
-gh attestation verify ./Sitepull-0.4.0-arm64.dmg \
+gh attestation verify ./Sitepull-0.4.1-arm64.dmg \
   --repo isaiahneal/sitepull \
   --signer-workflow isaiahneal/sitepull/.github/workflows/distribution.yml
 ```
@@ -324,7 +357,7 @@ An attestation proves which repository and workflow produced the exact bytes; it
 - Resource-body capture defaults to 25 MiB per response, 512 MiB across the capture, and three concurrent body reads. Responses without a trustworthy content length still require one complete in-memory Playwright buffer before their actual size can be enforced.
 - Responsive screenshots reuse one stabilized page and resize it through the configured viewports. DOM/computed-style evidence is extracted at the first configured viewport, so JavaScript or server behavior selected only during an initial viewport-specific load requires a separate capture.
 - Component names and semantic design roles are deterministic inferences. Raw measurements, frequencies, routes, and signatures remain available for downstream judgment.
-- Official publisher signing, macOS hardened runtime, and notarization are not configured for the public `v0.4.0` artifacts. GitHub attestations establish workflow provenance, not publisher identity.
+- Official publisher signing, macOS hardened runtime, and notarization are not configured for the public `v0.4.1` artifacts. GitHub attestations establish workflow provenance, not publisher identity.
 
 ## License
 

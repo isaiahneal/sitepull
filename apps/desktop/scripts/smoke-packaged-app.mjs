@@ -168,6 +168,92 @@ async function verifyMacSignature(application) {
   console.log('macOS bundle passes strict deep signature verification.');
 }
 
+async function detachMacDiskImage(mountPoint) {
+  try {
+    await execFileAsync('/usr/bin/hdiutil', ['detach', mountPoint]);
+  } catch (detachError) {
+    try {
+      await execFileAsync('/usr/bin/hdiutil', ['detach', '-force', mountPoint]);
+    } catch (forceDetachError) {
+      throw new AggregateError(
+        [detachError, forceDetachError],
+        `Could not detach the Sitepull DMG from ${mountPoint}.`,
+        { cause: forceDetachError },
+      );
+    }
+  }
+}
+
+async function verifyMacDmgSignature() {
+  if (platformName !== 'darwin') return;
+
+  const expectedName = `Sitepull-${desktopVersion}-${process.arch}.dmg`;
+  const matchingArtifacts = (await filesBelow(makeRoot)).filter(
+    (artifact) => path.basename(artifact) === expectedName,
+  );
+  if (matchingArtifacts.length !== 1) {
+    throw new Error(
+      `Expected exactly one ${expectedName} maker artifact, found ${matchingArtifacts.length}.`,
+    );
+  }
+
+  const diskImage = matchingArtifacts[0];
+  await assertFile(diskImage, 'DMG');
+  const mountPoint = await mkdtemp(path.join(os.tmpdir(), 'sitepull-dmg-smoke-'));
+
+  let mounted = false;
+  let verificationError;
+  try {
+    await execFileAsync(
+      '/usr/bin/hdiutil',
+      ['attach', '-readonly', '-nobrowse', '-noautoopen', '-mountpoint', mountPoint, diskImage],
+      { maxBuffer: 10 * 1024 * 1024 },
+    );
+    mounted = true;
+
+    const application = path.join(mountPoint, 'Sitepull.app');
+    const applicationStats = await stat(application);
+    if (!applicationStats.isDirectory()) {
+      throw new Error(`The DMG does not contain Sitepull.app: ${diskImage}`);
+    }
+    await verifyMacSignature(application);
+  } catch (error) {
+    verificationError = error;
+  }
+
+  let cleanupError;
+  if (mounted) {
+    try {
+      await detachMacDiskImage(mountPoint);
+    } catch (error) {
+      cleanupError = error;
+    }
+  }
+  if (!mounted || cleanupError === undefined) {
+    try {
+      await rm(mountPoint, {
+        recursive: true,
+        force: true,
+        maxRetries: 10,
+        retryDelay: 200,
+      });
+    } catch (error) {
+      cleanupError = error;
+    }
+  }
+
+  if (verificationError !== undefined && cleanupError !== undefined) {
+    throw new AggregateError(
+      [verificationError, cleanupError],
+      `The ${expectedName} signature gate failed and its mount could not be cleaned up.`,
+      { cause: cleanupError },
+    );
+  }
+  if (verificationError !== undefined) throw verificationError;
+  if (cleanupError !== undefined) throw cleanupError;
+  console.log(`macOS DMG signature verified (${expectedName}).`);
+}
+
 function isPathInside(parent, candidate) {
   const relative = path.relative(parent, candidate);
   return (
@@ -431,6 +517,7 @@ async function smokePackagedRenderer(executable) {
 const layout = packagedLayout();
 await assertFile(layout.executable, 'Packaged Sitepull executable');
 await verifyMakerOutputs();
+await verifyMacDmgSignature();
 await verifyFuses(layout.fuseTarget);
 await verifyMacBinaryArchitecture(layout.executable, 'Packaged Electron');
 await verifyMacSignature(layout.application);

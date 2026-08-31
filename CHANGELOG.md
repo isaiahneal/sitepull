@@ -2,6 +2,27 @@
 
 All notable Sitepull releases are documented here.
 
+## [0.4.1] - 2026-08-31
+
+### Added
+
+- First-party macOS/Linux shell and Windows PowerShell installers that detect the supported operating system and architecture, select the matching GitHub Release package, and verify it against `SHA256SUMS.txt` before installation
+- Dry-run and explicit-version modes for reviewing or automating the exact package selection without downloading or changing the machine
+
+### Changed
+
+- GitHub setup now starts with two short, copyable quick-install commands instead of requiring users to identify and install release assets manually
+- The release gate now checks, hashes, provenance-attests, uploads, and remotely verifies the two installer entry points alongside the fourteen native artifacts
+
+### Fixed
+
+- macOS packaging now removes AppleDouble sidecars before the final ad-hoc seal, then mounts and strictly verifies the finished DMG so a maker cannot omit a sealed sidecar and leave the distributed app with an invalid resource envelope
+- The macOS quick installer verifies the in-image and staged application seals before replacement and restores the previous app after a failed or interrupted cutover
+
+### Compatibility
+
+- The installer covers macOS 15+ on Apple silicon and Intel, Ubuntu 24.04 x64, Debian 12/13 x64, Fedora 44 x64, Alpine 3.24 x64, and Windows x64; unsupported operating-system versions and architectures fail with an explicit compatibility message
+
 ## [0.4.0] - 2026-08-31
 
 ### Added
@@ -104,6 +125,7 @@ All notable Sitepull releases are documented here.
 - PNG dimension and decoded-pixel enforcement at capture time and again before desktop rendering
 - Deterministic fixture site plus unit, integration, packaging, and real-browser acceptance coverage
 
+[0.4.1]: https://github.com/isaiahneal/sitepull/releases/tag/v0.4.1
 [0.4.0]: https://github.com/isaiahneal/sitepull/releases/tag/v0.4.0
 [0.3.1]: https://github.com/isaiahneal/sitepull/releases/tag/v0.3.1
 [0.3.0]: https://github.com/isaiahneal/sitepull/releases/tag/v0.3.0

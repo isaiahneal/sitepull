@@ -1,4 +1,7 @@
 import { readFileSync } from 'node:fs';
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
@@ -14,6 +17,7 @@ import forgeConfig, {
   linuxDistributionConfig,
   packagedMacAppPath,
   productionDeployEnvironment,
+  removeAppleDoubleFiles,
   resolveLinuxDistributionTarget,
   resolvePnpmInvocation,
 } from '../../forge.config.js';
@@ -53,6 +57,62 @@ describe('Electron Forge distribution configuration', () => {
       '/tmp/Sitepull-darwin-arm64/Sitepull.app',
     );
     expect(packagedMacAppPath('/tmp/Sitepull.app')).toBe('/tmp/Sitepull.app');
+  });
+
+  it('recursively removes only regular AppleDouble files before macOS signing', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'sitepull-appledouble-'));
+    const appPath = path.join(root, 'Sitepull.app');
+    const resourcesPath = path.join(appPath, 'Contents', 'Resources');
+    const nestedPath = path.join(resourcesPath, 'playwright', 'nested');
+    const appleDoubleDirectory = path.join(resourcesPath, '._preserved-directory');
+
+    try {
+      await Promise.all([
+        mkdir(nestedPath, { recursive: true }),
+        mkdir(appleDoubleDirectory, { recursive: true }),
+      ]);
+      await Promise.all([
+        writeFile(path.join(appPath, '._root-metadata'), 'appledouble'),
+        writeFile(path.join(resourcesPath, '._metadata.json'), 'appledouble'),
+        writeFile(path.join(nestedPath, '._nested-metadata.json'), 'appledouble'),
+        writeFile(path.join(appleDoubleDirectory, 'ordinary.txt'), 'preserved'),
+        writeFile(path.join(resourcesPath, '.metadata.json'), 'preserved'),
+        writeFile(path.join(resourcesPath, '.DS_Store'), 'preserved'),
+        writeFile(path.join(resourcesPath, 'metadata.json'), 'preserved'),
+      ]);
+
+      const removedPaths = await removeAppleDoubleFiles(appPath);
+
+      expect(removedPaths.map((removedPath) => path.relative(appPath, removedPath))).toEqual([
+        '._root-metadata',
+        path.join('Contents', 'Resources', '._metadata.json'),
+        path.join('Contents', 'Resources', 'playwright', 'nested', '._nested-metadata.json'),
+      ]);
+      await expect(stat(path.join(resourcesPath, '._metadata.json'))).rejects.toMatchObject({
+        code: 'ENOENT',
+      });
+      await expect(stat(path.join(nestedPath, '._nested-metadata.json'))).rejects.toMatchObject({
+        code: 'ENOENT',
+      });
+      await expect(stat(path.join(appPath, '._root-metadata'))).rejects.toMatchObject({
+        code: 'ENOENT',
+      });
+      expect((await stat(appleDoubleDirectory)).isDirectory()).toBe(true);
+      await expect(readFile(path.join(appleDoubleDirectory, 'ordinary.txt'), 'utf8')).resolves.toBe(
+        'preserved',
+      );
+      await expect(readFile(path.join(resourcesPath, '.metadata.json'), 'utf8')).resolves.toBe(
+        'preserved',
+      );
+      await expect(readFile(path.join(resourcesPath, '.DS_Store'), 'utf8')).resolves.toBe(
+        'preserved',
+      );
+      await expect(readFile(path.join(resourcesPath, 'metadata.json'), 'utf8')).resolves.toBe(
+        'preserved',
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it('runs pnpm through Node on Windows without shell command parsing', () => {

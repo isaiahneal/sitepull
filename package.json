@@ -1,6 +1,6 @@
 {
   "name": "sitepull",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "private": true,
   "type": "module",
   "description": "Pull the web apart: a cross-platform desktop utility and CLI for browser-delivered design references.",

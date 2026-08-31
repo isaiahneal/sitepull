@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { cp, mkdtemp, mkdir, rm, stat } from 'node:fs/promises';
+import { cp, mkdtemp, mkdir, readdir, rm, stat, unlink } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -319,11 +319,32 @@ export function packagedMacAppPath(outputPath: string): string {
     : path.join(absoluteOutputPath, 'Sitepull.app');
 }
 
+export async function removeAppleDoubleFiles(rootPath: string): Promise<string[]> {
+  const removedPaths: string[] = [];
+
+  async function removeFromDirectory(directoryPath: string): Promise<void> {
+    const entries = await readdir(directoryPath, { withFileTypes: true });
+    for (const entry of entries) {
+      const entryPath = path.join(directoryPath, entry.name);
+      if (entry.isDirectory()) {
+        await removeFromDirectory(entryPath);
+      } else if (entry.isFile() && entry.name.startsWith('._')) {
+        await unlink(entryPath);
+        removedPaths.push(entryPath);
+      }
+    }
+  }
+
+  await removeFromDirectory(rootPath);
+  return removedPaths.sort();
+}
+
 async function adHocResignMacApp(appPath: string): Promise<void> {
   const appStats = await stat(appPath);
   if (!appStats.isDirectory() || path.extname(appPath) !== '.app') {
     throw new Error(`Refusing to sign an invalid macOS application path: ${appPath}`);
   }
+  await removeAppleDoubleFiles(appPath);
   await execFileAsync(
     '/usr/bin/codesign',
     [
@@ -411,8 +432,9 @@ const config: ForgeConfig = {
       await stageProductionDependencies(buildPath);
     },
     // Fuses and the packager both mutate signed bundle contents. Re-sign only
-    // after those mutations, then prove the ad-hoc bundle is internally valid
-    // before a DMG or ZIP maker consumes it.
+    // after those mutations. AppleDouble sidecars must be removed before the
+    // final seal because DMG creation omits them. Then prove the ad-hoc bundle
+    // is internally valid before a DMG or ZIP maker consumes it.
     postPackage: async (_forgeConfig, packageResult) => {
       if (packageResult.platform !== 'darwin') return;
       for (const outputPath of packageResult.outputPaths) {

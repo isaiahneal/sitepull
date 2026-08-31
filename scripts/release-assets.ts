@@ -2,7 +2,7 @@ import { readdir } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-export function expectedNativeReleaseAssets(version: string): string[] {
+export function expectedReleaseAssets(version: string): string[] {
   if (!/^\d+\.\d+\.\d+$/u.test(version)) {
     throw new Error(`Invalid Sitepull release version: ${JSON.stringify(version)}`);
   }
@@ -21,6 +21,8 @@ export function expectedNativeReleaseAssets(version: string): string[] {
     `sitepull-${version}-full.nupkg`,
     'Sitepull-windows-RELEASES',
     `Sitepull-win32-x64-${version}.zip`,
+    'sitepull-install.sh',
+    'sitepull-install.ps1',
   ];
 }
 
@@ -46,11 +48,8 @@ export function publishedReleaseAssetName(sourceName: string): string | undefine
   return undefined;
 }
 
-export function assertExactNativeReleaseAssets(
-  actualNames: readonly string[],
-  version: string,
-): void {
-  const expected = expectedNativeReleaseAssets(version);
+export function assertExactReleaseAssets(actualNames: readonly string[], version: string): void {
+  const expected = expectedReleaseAssets(version);
   const duplicates = actualNames.filter((name, index) => actualNames.indexOf(name) !== index);
   const expectedSet = new Set(expected);
   const actualSet = new Set(actualNames);
@@ -63,9 +62,7 @@ export function assertExactNativeReleaseAssets(
       missing.length === 0 ? '' : `missing: ${missing.sort().join(', ')}`,
       extra.length === 0 ? '' : `extra: ${extra.sort().join(', ')}`,
     ].filter(Boolean);
-    throw new Error(
-      `Native release assets do not match the exact platform manifest (${details.join('; ')})`,
-    );
+    throw new Error(`Release assets do not match the exact manifest (${details.join('; ')})`);
   }
 }
 
@@ -76,14 +73,14 @@ async function main(): Promise<void> {
     return;
   }
   if (command === 'print' && version !== undefined && directory === undefined) {
-    process.stdout.write(`${expectedNativeReleaseAssets(version).join('\n')}\n`);
+    process.stdout.write(`${expectedReleaseAssets(version).join('\n')}\n`);
     return;
   }
   if (command === 'verify' && version !== undefined && directory !== undefined) {
     const entries = await readdir(path.resolve(directory), { withFileTypes: true });
     const files = entries.filter((entry) => entry.isFile()).map((entry) => entry.name);
-    assertExactNativeReleaseAssets(files, version);
-    console.log(`Verified ${files.length} exact native release assets.`);
+    assertExactReleaseAssets(files, version);
+    console.log(`Verified ${files.length} exact release assets.`);
     return;
   }
   throw new Error(

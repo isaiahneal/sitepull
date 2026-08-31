@@ -29,6 +29,33 @@ jobs:
           cache: true
           install: false
 
+      - name: Validate release installers
+        shell: bash
+        run: |
+          set -euo pipefail
+          package_version="$(node -p "JSON.parse(require('fs').readFileSync('package.json', 'utf8')).version")"
+
+          sh -n scripts/sitepull-install.sh
+          shellcheck scripts/sitepull-install.sh
+          HOME=/tmp \
+            SITEPULL_INSTALLER_TEST_MODE=1 \
+            SITEPULL_INSTALLER_TEST_OS=Darwin \
+            SITEPULL_INSTALLER_TEST_ARCH=arm64 \
+            SITEPULL_INSTALLER_TEST_MACOS_VERSION=15.0 \
+            sh scripts/sitepull-install.sh --dry-run --version "${package_version}"
+          if sh scripts/sitepull-install.sh --dry-run --version invalid; then
+            echo 'POSIX installer accepted an invalid release version' >&2
+            exit 1
+          fi
+
+          pwsh -NoLogo -NoProfile -File scripts/sitepull-install.ps1 \
+            -Version "v${package_version}" -DryRun
+          if pwsh -NoLogo -NoProfile -File scripts/sitepull-install.ps1 \
+            -Version invalid -DryRun; then
+            echo 'PowerShell installer accepted an invalid release version' >&2
+            exit 1
+          fi
+
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 

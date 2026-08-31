@@ -266,8 +266,8 @@ describe('runCli', () => {
     expect(pullHelpOutput.stdout()).toContain('--ai-pack');
     expect(pullHelpOutput.stdout()).toContain('--headless');
     expect(pullHelpOutput.stdout()).toContain('sitepull pull example.com');
-    expect(SITEPULL_VERSION).toBe('0.4.0');
-    expect(versionOutput.stdout()).toContain('sitepull/0.4.0');
+    expect(SITEPULL_VERSION).toBe('0.4.1');
+    expect(versionOutput.stdout()).toContain('sitepull/0.4.1');
   });
 
   it('advertises only Chromium in system-browser package help', async () => {
