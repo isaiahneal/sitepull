@@ -22,7 +22,7 @@ describe('Electron Forge distribution configuration', () => {
   it('configures the exact native maker matrix', () => {
     const makers = (forgeConfig.makers ?? []) as ConfiguredMaker[];
     expect(makers.map(({ name, platforms }) => ({ name, platforms }))).toEqual([
-      { name: 'zip', platforms: ['darwin', 'linux', 'win32'] },
+      { name: 'zip', platforms: ['darwin', 'win32'] },
       { name: 'dmg', platforms: ['darwin'] },
       { name: 'deb', platforms: ['linux'] },
       { name: 'squirrel', platforms: ['win32'] },

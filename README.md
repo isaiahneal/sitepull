@@ -36,7 +36,7 @@ WebKit is the default and bundled desktop rendering engine. Chromium and Firefox
 Desktop packages are published on the [GitHub Releases page](https://github.com/isaiahneal/sitepull/releases):
 
 - macOS arm64: DMG and ZIP
-- Ubuntu 24.04 x64: DEB and ZIP
+- Ubuntu 24.04 x64: DEB
 - Windows x64: Squirrel Setup executable and ZIP
 
 Each desktop package contains its own Playwright WebKit runtime. Release artifacts are built on their matching operating system so the embedded browser is native to that platform.
@@ -250,7 +250,7 @@ pnpm make:linux
 pnpm make:windows
 ```
 
-Platform-specific unpacked builds are also available through `pnpm package:mac`, `pnpm package:linux`, and `pnpm package:windows`. Forge writes output below `apps/desktop/out/`.
+Platform-specific unpacked build intermediates are also available through `pnpm package:mac`, `pnpm package:linux`, and `pnpm package:windows`. Forge writes output below `apps/desktop/out/`. On Linux, the supported v0.2.0 installation is the DEB produced by `pnpm make:linux`; installing it is what safely establishes Electron's sandbox-helper ownership and permissions.
 
 Build each target on its native operating system. The repository's distribution workflow does exactly that for macOS, Ubuntu Linux, and Windows. Distribution waits for the reusable quality workflow and verifies that a release tag exactly matches `package.json` plus a nonempty versioned release-notes file before any native build begins. External workflow actions are pinned to immutable commits. Each runner then verifies its expected maker outputs, Electron fuse state, the packaged app's own Playwright module resolution, embedded WebKit launch, preload/IPC bridge, and renderer startup; macOS also verifies the bundle's internal ad-hoc signature consistency. The Linux gate additionally installs the generated DEB in a pristine Ubuntu 24.04 container and launches its packaged runtime. macOS DMG creation requires Xcode Command Line Tools; Ubuntu DEB creation requires `fakeroot`; Windows Squirrel creation runs on Windows.
 
@@ -277,7 +277,7 @@ An attestation proves which repository and workflow produced the exact bytes; it
 - Content behind login, anti-bot controls, CAPTCHAs, paywalls, or private-network hosts is currently intentionally unsupported.
 - Playwright WebKit is useful for Safari-adjacent behavior, but it is not the Safari application.
 - Packaged desktop builds intentionally embed only WebKit; Chromium and Firefox remain optional CLI/source-development engines.
-- The packaged Linux desktop is targeted and clean-install tested on Ubuntu 24.04 x64. An RPM is intentionally not published: Playwright's embedded WebKit build targets Ubuntu ABIs that current Fedora repositories cannot satisfy honestly.
+- The packaged Linux desktop is targeted and clean-install tested on Ubuntu 24.04 x64. A generic Linux ZIP is intentionally not published because an archive cannot safely install Electron's root-owned setuid sandbox helper; the DEB establishes and verifies those permissions without disabling Chromium's sandbox. An RPM is also not published: Playwright's embedded WebKit build targets Ubuntu ABIs that current Fedora repositories cannot satisfy honestly.
 - WebKit page workers are disabled during capture so worker-only WebTransport cannot bypass the validated HTTP proxy. Sites that require dedicated/shared workers for rendering may lose that worker-driven behavior; Chromium and Firefox instead use engine-level non-proxied transport restrictions.
 - Resource-body capture defaults to 25 MiB per response, 512 MiB across the capture, and three concurrent body reads. Responses without a trustworthy content length still require one complete in-memory Playwright buffer before their actual size can be enforced.
 - Responsive screenshots reuse one stabilized page and resize it through the configured viewports. DOM/computed-style evidence is extracted at the first configured viewport, so JavaScript or server behavior selected only during an initial viewport-specific load requires a separate capture.

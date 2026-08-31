@@ -70,10 +70,7 @@ async function verifyMakerOutputs() {
           ['ZIP', (file) => file.endsWith(`-${desktopVersion}.zip`)],
         ]
       : platformName === 'linux'
-        ? [
-            ['DEB', (file) => file.includes(desktopVersion) && file.endsWith('.deb')],
-            ['ZIP', (file) => file.endsWith(`-${desktopVersion}.zip`)],
-          ]
+        ? [['DEB', (file) => file.includes(desktopVersion) && file.endsWith('.deb')]]
         : [
             ['Squirrel setup executable', (file) => file.endsWith('Setup.exe')],
             [

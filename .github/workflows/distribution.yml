@@ -91,7 +91,20 @@ jobs:
         run: pnpm run ${{ matrix.command }}
 
       - name: Smoke-test packaged application
+        if: runner.os != 'Linux'
         run: pnpm --filter @sitepull/desktop smoke:packaged
+
+      - name: Install and smoke-test the Ubuntu DEB
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          deb="$(find apps/desktop/out/make -type f -name '*.deb' -print -quit)"
+          test -n "$deb"
+          sudo apt-get install --yes "$deb"
+          test "$(stat --format='%u:%g:%a' /usr/lib/sitepull/chrome-sandbox)" = "0:0:4755"
+          SITEPULL_PACKAGE_DIRECTORY=/usr/lib/sitepull \
+            pnpm --filter @sitepull/desktop smoke:packaged
 
       - name: Clean-install and probe the Ubuntu 24.04 DEB
         if: runner.os == 'Linux'
@@ -108,6 +121,9 @@ jobs:
               deb="$(find /artifacts -type f -name "*.deb" -print -quit)"
               test -n "${deb}"
               apt-get install --yes "${deb}"
+              executable="$(readlink -f "$(command -v sitepull)")"
+              sandbox="$(dirname "${executable}")/chrome-sandbox"
+              test "$(stat --format="%u:%g:%a" "${sandbox}")" = "0:0:4755"
               useradd --create-home sitepull-smoke
               runuser -u sitepull-smoke -- env \
                 SITEPULL_PACKAGED_RUNTIME_SMOKE=probe-only \
@@ -169,8 +185,8 @@ jobs:
           done < <(find native-artifacts -type f -print0)
 
           asset_count="$(find release-assets -maxdepth 1 -type f | wc -l | tr -d ' ')"
-          if [[ "$asset_count" -lt 8 ]]; then
-            echo "Expected at least 8 native release assets, found $asset_count" >&2
+          if [[ "$asset_count" -lt 7 ]]; then
+            echo "Expected at least 7 native release assets, found $asset_count" >&2
             find native-artifacts -type f -print
             exit 1
           fi

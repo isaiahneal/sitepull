@@ -258,7 +258,10 @@ const config: ForgeConfig = {
     },
   },
   makers: [
-    new MakerZIP({}, ['darwin', 'linux', 'win32']),
+    // A generic Linux archive cannot install Electron's chrome-sandbox with
+    // root ownership and mode 4755. Ship Linux through the DEB maker so the
+    // sandbox remains enabled without asking users to weaken it.
+    new MakerZIP({}, ['darwin', 'win32']),
     new MakerDMG(
       {
         name: 'Sitepull',

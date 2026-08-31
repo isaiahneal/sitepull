@@ -21,6 +21,7 @@ All notable Sitepull releases are documented here.
 - `AI_CONTEXT.md` now surfaces explicit capture coverage near the top and records resource-budget settings, failed routes, unavailable resources, retry recovery, and per-page attempt counts
 - The desktop new-capture screen restores the last effective recipe, while each new recent entry retains the normalized URL behavior, output parent, crawl configuration, limits, and viewports used
 - The shared runtime version is centralized so CLI output and generated capture metadata report `0.2.0` consistently
+- Linux desktop distribution is limited to the Ubuntu 24.04 DEB so installation can preserve Electron's root-owned setuid sandbox helper; an unsafe generic archive is not published
 
 ### Fixed
 
