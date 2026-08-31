@@ -1,0 +1,29 @@
+# Maintainer: Isaiah Neal <70036686+isaiahneal@users.noreply.github.com>
+pkgname=sitepull-cli
+pkgver="${SITEPULL_VERSION:?SITEPULL_VERSION is required}"
+pkgrel=0
+pkgdesc="Headless Sitepull website capture CLI"
+url="https://github.com/isaiahneal/sitepull"
+arch="x86_64"
+license="MIT"
+depends="
+	ca-certificates
+	chromium
+	font-liberation
+	font-noto
+	font-noto-cjk
+	font-noto-emoji
+	nodejs>=24
+"
+options="!check !strip"
+source="$pkgname-$pkgver.tar.gz"
+
+package() {
+	install -d "$pkgdir/usr/lib/sitepull-cli"
+	cp -a "$builddir/payload/." "$pkgdir/usr/lib/sitepull-cli/"
+	install -Dm755 "$builddir/sitepull" "$pkgdir/usr/bin/sitepull"
+	install -Dm644 "$builddir/payload/LICENSE" \
+		"$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}
+
+sha512sums="${SITEPULL_SOURCE_SHA512:?SITEPULL_SOURCE_SHA512 is required}  $pkgname-$pkgver.tar.gz"

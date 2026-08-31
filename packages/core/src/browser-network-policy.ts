@@ -36,6 +36,7 @@ export function untrustedBrowserLaunchOptions(
   if (engine === 'chromium') {
     return {
       ...common,
+      chromiumSandbox: true,
       args: ['--disable-quic', '--force-webrtc-ip-handling-policy=disable_non_proxied_udp'],
     };
   }

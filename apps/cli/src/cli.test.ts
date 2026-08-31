@@ -144,6 +144,39 @@ describe('runCli', () => {
     });
   });
 
+  it('passes a validated distro Chromium path into system-browser captures', async () => {
+    const output = captureIo();
+    let observedEngine: string | undefined;
+    let observedExecutable: string | undefined;
+    const dependencies: PullDependencies = {
+      ...successfulDependencies(),
+      runCapture: (input, options) => {
+        observedEngine = input.config?.engine;
+        observedExecutable = options?.chromiumExecutablePath;
+        return Promise.resolve({
+          outputDirectory: '/captures/example.com',
+          summary: completedSummary(),
+        });
+      },
+    };
+
+    const exitCode = await runCli(['node', 'sitepull', 'pull', 'example.com', '--quiet'], {
+      io: output.io,
+      pullDependencies: dependencies,
+      parseEnvironment: {
+        homeDirectory: '/home/sitepull',
+        currentDirectory: '/work',
+        defaultEngine: 'chromium',
+        supportedEngines: ['chromium'],
+      },
+      chromiumExecutablePath: '/usr/bin/chromium-browser',
+    });
+
+    expect(exitCode).toBe(0);
+    expect(observedEngine).toBe('chromium');
+    expect(observedExecutable).toBe('/usr/bin/chromium-browser');
+  });
+
   it('returns exit code 1 and an actionable message for capture failures', async () => {
     const output = captureIo();
     const dependencies: PullDependencies = {
@@ -209,7 +242,23 @@ describe('runCli', () => {
     expect(pullHelpOutput.stdout()).toContain('--ai-pack');
     expect(pullHelpOutput.stdout()).toContain('--headless');
     expect(pullHelpOutput.stdout()).toContain('sitepull pull example.com');
-    expect(SITEPULL_VERSION).toBe('0.3.1');
-    expect(versionOutput.stdout()).toContain('sitepull/0.3.1');
+    expect(SITEPULL_VERSION).toBe('0.4.0');
+    expect(versionOutput.stdout()).toContain('sitepull/0.4.0');
+  });
+
+  it('advertises only Chromium in system-browser package help', async () => {
+    const output = captureIo();
+    expect(
+      await runCli(['node', 'sitepull', 'pull', '--help'], {
+        io: output.io,
+        parseEnvironment: {
+          defaultEngine: 'chromium',
+          supportedEngines: ['chromium'],
+        },
+        chromiumExecutablePath: '/usr/bin/chromium-browser',
+      }),
+    ).toBe(0);
+    expect(output.stdout()).toContain('Rendering engine for this package: chromium');
+    expect(output.stdout()).not.toContain('webkit, chromium, or firefox');
   });
 });

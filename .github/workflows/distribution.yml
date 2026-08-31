@@ -1,4 +1,4 @@
-name: Desktop distributions
+name: Native distributions
 
 on:
   workflow_dispatch:
@@ -9,7 +9,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: desktop-distributions-${{ github.ref }}
+  group: native-distributions-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -321,10 +321,128 @@ jobs:
             SITEPULL_PACKAGE_DIRECTORY=/usr/lib/sitepull \
             node apps/desktop/scripts/smoke-packaged-app.mjs
 
+  make-fedora:
+    name: Fedora 44 CLI RPM (x64)
+    needs: [quality, release-metadata]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      FEDORA_IMAGE: fedora:44@sha256:43b29f65a41eb9c35e1cd5323e3bdf3b655c2357a9f4f1ff2f9c2798e5045d80
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Verify native x64 builder
+        shell: bash
+        run: test "$(uname -m)" = x86_64
+
+      - name: Build Fedora 44 RPM
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_date_epoch="$(git log -1 --format=%ct)"
+          mkdir -p dist/fedora
+          docker run --rm \
+            --platform linux/amd64 \
+            --volume "${GITHUB_WORKSPACE}:/workspace:ro" \
+            --volume "${GITHUB_WORKSPACE}/dist/fedora:/output" \
+            --env "SITEPULL_SOURCE_DATE_EPOCH=${source_date_epoch}" \
+            --env "SITEPULL_OUTPUT_UID=$(id -u)" \
+            --env "SITEPULL_OUTPUT_GID=$(id -g)" \
+            "${FEDORA_IMAGE}" \
+            bash /workspace/packaging/fedora/build-rpm.sh
+
+      - name: Clean-install and smoke-test Fedora RPM
+        shell: bash
+        run: |
+          set -euo pipefail
+          package_version="$(node -p "JSON.parse(require('fs').readFileSync('package.json', 'utf8')).version")"
+          rpm_name="sitepull-cli-${package_version}-1.fc44.x86_64.rpm"
+          test -s "dist/fedora/${rpm_name}"
+          docker run --rm \
+            --platform linux/amd64 \
+            --security-opt seccomp=unconfined \
+            --volume "${GITHUB_WORKSPACE}:/workspace:ro" \
+            --volume "${GITHUB_WORKSPACE}/dist/fedora/${rpm_name}:/package/sitepull-cli.rpm:ro" \
+            "${FEDORA_IMAGE}" \
+            bash /workspace/packaging/fedora/smoke-installed.sh /package/sitepull-cli.rpm
+
+      - name: Upload native artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: sitepull-fedora44-x64
+          path: dist/fedora/*.rpm
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
+  make-alpine:
+    name: Alpine 3.24 CLI APK (x64)
+    needs: [quality, release-metadata]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      ALPINE_IMAGE: alpine:3.24@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Verify native x64 builder
+        shell: bash
+        run: test "$(uname -m)" = x86_64
+
+      - name: Build signed Alpine 3.24 APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist/alpine
+          docker run --rm \
+            --platform linux/amd64 \
+            --volume "${GITHUB_WORKSPACE}:/workspace:ro" \
+            --volume "${GITHUB_WORKSPACE}/dist/alpine:/output" \
+            --env SITEPULL_SOURCE_ROOT=/workspace \
+            "${ALPINE_IMAGE}" \
+            sh /workspace/packaging/alpine/build-apk.sh /output
+
+      - name: Clean-install and audit signed Alpine APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          package_version="$(node -p "JSON.parse(require('fs').readFileSync('package.json', 'utf8')).version")"
+          apk_name="sitepull-cli-${package_version}-r0.apk"
+          key_name="sitepull-alpine-v${package_version}.rsa.pub"
+          test -s "dist/alpine/${apk_name}"
+          test -s "dist/alpine/${key_name}"
+          docker run --rm \
+            --platform linux/amd64 \
+            --security-opt seccomp=unconfined \
+            --volume "${GITHUB_WORKSPACE}:/workspace:ro" \
+            --volume "${GITHUB_WORKSPACE}/dist/alpine:/artifacts:ro" \
+            --workdir /workspace \
+            --env "SITEPULL_VERSION=${package_version}" \
+            "${ALPINE_IMAGE}" \
+            sh -eux -c '
+              packaging/alpine/audit-apk.sh \
+                "/artifacts/sitepull-cli-${SITEPULL_VERSION}-r0.apk" \
+                "/artifacts/sitepull-alpine-v${SITEPULL_VERSION}.rsa.pub" \
+                "${SITEPULL_VERSION}"
+            '
+
+      - name: Upload native artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: sitepull-alpine3.24-x64
+          path: |
+            dist/alpine/*.apk
+            dist/alpine/*.rsa.pub
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
   release:
     name: Publish GitHub release
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [quality, release-metadata, make, make-debian, audit-debian]
+    needs: [quality, release-metadata, make, make-debian, audit-debian, make-fedora, make-alpine]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:

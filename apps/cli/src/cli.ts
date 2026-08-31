@@ -4,6 +4,7 @@ import { SITEPULL_VERSION } from '@sitepull/contracts';
 import cac, { type CAC } from 'cac';
 
 import { UsageError, parsePullCommand, type RawPullOptions } from './options.js';
+import type { ParseEnvironment } from './options.js';
 import { executePull, DEFAULT_PULL_DEPENDENCIES, type PullDependencies } from './pull.js';
 
 export { SITEPULL_VERSION } from '@sitepull/contracts';
@@ -21,6 +22,8 @@ export interface CliRuntime {
   readonly io?: CliIo;
   readonly signals?: SignalSource;
   readonly pullDependencies?: PullDependencies;
+  readonly parseEnvironment?: ParseEnvironment;
+  readonly chromiumExecutablePath?: string;
 }
 
 const DEFAULT_IO: CliIo = {
@@ -67,14 +70,21 @@ function messageFor(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function configureCli(action: (url: unknown, options: RawPullOptions) => Promise<void>): CAC {
+function configureCli(
+  action: (url: unknown, options: RawPullOptions) => Promise<void>,
+  supportedEngines?: ParseEnvironment['supportedEngines'],
+): CAC {
   const cli = cac('sitepull');
+  const engineDescription =
+    supportedEngines === undefined
+      ? 'Rendering engine: webkit, chromium, or firefox'
+      : `Rendering engine for this package: ${supportedEngines.join(', ')}`;
   cli
     .command('pull <url>', 'Render, inspect, and package a browser-delivered website')
     .option('-o, --output <directory>', 'Output root (default: ~/Sitepull)')
     .option('-d, --depth <number>', 'Maximum route depth (default: 2)')
     .option('-p, --max-pages <number>', 'Maximum pages to crawl (default: 25)')
-    .option('--engine <engine>', 'Rendering engine: webkit, chromium, or firefox')
+    .option('--engine <engine>', engineDescription)
     .option('--viewports <presets>', 'Comma-separated presets: desktop,mobile,tablet')
     .option('--include-subdomains', 'Permit crawling subdomains of the source host')
     .option('--headed', 'Show the Playwright browser while capturing')
@@ -105,7 +115,7 @@ export async function runCli(argv: readonly string[], runtime: CliRuntime = {}):
   let quiet = false;
 
   const cli = configureCli(async (url, rawOptions) => {
-    const command = parsePullCommand(url, rawOptions);
+    const command = parsePullCommand(url, rawOptions, runtime.parseEnvironment);
     quiet = command.quiet;
     const controller = new AbortController();
     activeController = controller;
@@ -116,12 +126,18 @@ export async function runCli(argv: readonly string[], runtime: CliRuntime = {}):
     });
 
     try {
-      const result = await executePull(command, controller.signal, io.writeStderr, dependencies);
+      const result = await executePull(
+        command,
+        controller.signal,
+        io.writeStderr,
+        dependencies,
+        command.request.config.engine === 'chromium' ? runtime.chromiumExecutablePath : undefined,
+      );
       io.writeStdout(`${result.finalPath}\n`);
     } finally {
       removeSigint();
     }
-  });
+  }, runtime.parseEnvironment?.supportedEngines);
 
   try {
     captureConsoleInfo(io.writeStdout, () => cli.parse([...argv], { run: false }));

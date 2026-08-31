@@ -1,0 +1,17 @@
+#!/bin/sh
+set -eu
+
+readonly SITEPULL_CHROMIUM=/usr/bin/chromium-browser
+readonly SITEPULL_ENTRYPOINT=/usr/lib/sitepull-cli/dist/bin.js
+
+if [ ! -x "${SITEPULL_CHROMIUM}" ]; then
+  echo "sitepull: Fedora Chromium is missing at ${SITEPULL_CHROMIUM}" >&2
+  exit 1
+fi
+if [ ! -r "${SITEPULL_ENTRYPOINT}" ]; then
+  echo "sitepull: CLI entrypoint is missing at ${SITEPULL_ENTRYPOINT}" >&2
+  exit 1
+fi
+
+export SITEPULL_SYSTEM_CHROMIUM="${SITEPULL_CHROMIUM}"
+exec /usr/bin/node "${SITEPULL_ENTRYPOINT}" "$@"

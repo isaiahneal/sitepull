@@ -14,6 +14,9 @@ export function expectedNativeReleaseAssets(version: string): string[] {
     `sitepull_${version}-1.ubuntu24.04_amd64.deb`,
     `sitepull_${version}-1.debian12_amd64.deb`,
     `sitepull_${version}-1.debian13_amd64.deb`,
+    `sitepull-cli-${version}-1.fc44.x86_64.rpm`,
+    `sitepull-cli-${version}-r0.apk`,
+    `sitepull-alpine-v${version}.rsa.pub`,
     'SitepullSetup.exe',
     `sitepull-${version}-full.nupkg`,
     'Sitepull-windows-RELEASES',
@@ -33,7 +36,10 @@ export function publishedReleaseAssetName(sourceName: string): string | undefine
     sourceName.endsWith('.dmg') ||
     sourceName.endsWith('.zip') ||
     sourceName.endsWith('Setup.exe') ||
-    sourceName.endsWith('.nupkg')
+    sourceName.endsWith('.nupkg') ||
+    sourceName.endsWith('.rpm') ||
+    sourceName.endsWith('.apk') ||
+    sourceName.endsWith('.rsa.pub')
   ) {
     return sourceName;
   }

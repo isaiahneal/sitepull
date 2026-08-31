@@ -1,0 +1,47 @@
+%global debug_package %{nil}
+
+Name:           sitepull-cli
+Version:        @SITEPULL_VERSION@
+Release:        1.fc44
+Summary:        Headless website capture CLI using Fedora Chromium
+
+License:        MIT
+URL:            https://github.com/isaiahneal/sitepull
+Source0:        %{name}-%{version}.tar.gz
+Source1:        sitepull
+
+BuildArch:      x86_64
+Requires:       nodejs24 >= 1:24
+Requires:       nodejs24-bin >= 1:24
+Requires:       chromium
+Requires:       ca-certificates
+Requires:       google-noto-sans-vf-fonts
+Requires:       google-noto-color-emoji-fonts
+
+%description
+Sitepull captures browser-delivered websites into inspectable local artifacts.
+This Fedora package provides the headless command-line interface and uses
+Fedora's system Chromium build with the browser sandbox enabled.
+
+%prep
+%setup -q
+
+%build
+
+%install
+mkdir -p %{buildroot}/usr/lib/sitepull-cli
+cp -a deployment/. %{buildroot}/usr/lib/sitepull-cli/
+install -Dpm0755 %{SOURCE1} %{buildroot}/usr/bin/sitepull
+
+%files
+/usr/bin/sitepull
+%license /usr/lib/sitepull-cli/LICENSE
+/usr/lib/sitepull-cli/dist
+/usr/lib/sitepull-cli/node_modules
+/usr/lib/sitepull-cli/package.json
+/usr/lib/sitepull-cli/pnpm-lock.yaml
+/usr/lib/sitepull-cli/pnpm-workspace.yaml
+
+%changelog
+* Mon Aug 31 2026 Isaiah Neal <70036686+isaiahneal@users.noreply.github.com> - @SITEPULL_VERSION@-1.fc44
+- Package the Fedora 44 headless CLI with system Chromium.

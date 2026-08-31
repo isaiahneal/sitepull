@@ -1,4 +1,6 @@
-import { rm } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { access, realpath, rm, stat } from 'node:fs/promises';
+import path from 'node:path';
 
 import {
   AssetManifestSchema,
@@ -68,6 +70,8 @@ export interface RunCaptureOptions {
   readonly onEvent?: (event: CaptureEvent) => void;
   /** Intended for deterministic loopback fixtures; desktop and CLI leave this false. */
   readonly allowPrivateHosts?: boolean;
+  /** Use a distro-managed Chromium build instead of Playwright's bundled binary. */
+  readonly chromiumExecutablePath?: string;
 }
 
 export interface CaptureRunResult {
@@ -135,12 +139,53 @@ function serializeError(error: SitepullError): ReturnType<SitepullError['toJSON'
 async function launchBrowser(
   engine: 'webkit' | 'chromium' | 'firefox',
   headed: boolean,
+  chromiumExecutablePath?: string,
 ): Promise<Browser> {
+  let executablePath: string | undefined;
+  if (chromiumExecutablePath !== undefined) {
+    if (engine !== 'chromium') {
+      throw new SitepullError({
+        code: 'BROWSER_NOT_INSTALLED',
+        message: 'A system Chromium executable can only be used with the chromium engine.',
+        stage: 'launching-browser',
+      });
+    }
+    if (!path.isAbsolute(chromiumExecutablePath)) {
+      throw new SitepullError({
+        code: 'BROWSER_NOT_INSTALLED',
+        message: 'The configured system Chromium path must be absolute.',
+        stage: 'launching-browser',
+      });
+    }
+    try {
+      executablePath = await realpath(chromiumExecutablePath);
+      const executableStats = await stat(executablePath);
+      if (!executableStats.isFile()) throw new Error('not a regular file');
+      await access(executablePath, constants.X_OK);
+    } catch (error) {
+      throw new SitepullError({
+        code: 'BROWSER_NOT_INSTALLED',
+        message: `System Chromium is not an executable file: ${chromiumExecutablePath}`,
+        stage: 'launching-browser',
+        retryable: false,
+        cause: error,
+      });
+    }
+  }
+
   try {
-    return await (await browserType(engine)).launch(untrustedBrowserLaunchOptions(engine, headed));
+    return await (
+      await browserType(engine)
+    ).launch({
+      ...untrustedBrowserLaunchOptions(engine, headed),
+      ...(executablePath === undefined ? {} : { executablePath }),
+    });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    if (/executable.*doesn.*exist|browser.*not.*installed|playwright install/iu.test(message)) {
+    if (
+      executablePath === undefined &&
+      /executable.*doesn.*exist|browser.*not.*installed|playwright install/iu.test(message)
+    ) {
       throw new SitepullError({
         code: 'BROWSER_NOT_INSTALLED',
         message: `Playwright ${engine} is not installed. Run: pnpm exec playwright install ${engine}`,
@@ -151,7 +196,10 @@ async function launchBrowser(
     }
     throw new SitepullError({
       code: 'CRAWL_FAILED',
-      message: `Could not launch Playwright ${engine}: ${message}`,
+      message:
+        executablePath === undefined
+          ? `Could not launch Playwright ${engine}: ${message}`
+          : `Could not launch system Chromium at ${executablePath}: ${message}`,
       stage: 'launching-browser',
       retryable: true,
       cause: error,
@@ -378,7 +426,7 @@ export async function runCapture(
     });
 
     emitProgress('launching-browser', 'started', `Launching ${config.engine}.`, normalizedUrl);
-    browser = await launchBrowser(config.engine, config.headed);
+    browser = await launchBrowser(config.engine, config.headed, options.chromiumExecutablePath);
     networkProxy = await createNetworkPolicyProxy({
       allowPrivateHosts,
       connectTimeoutMs: config.pageTimeoutMs,

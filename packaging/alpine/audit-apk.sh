@@ -1,0 +1,126 @@
+#!/bin/sh
+
+set -eu
+
+fail() {
+  printf 'Alpine APK audit failed: %s\n' "$1" >&2
+  exit 1
+}
+
+[ "$#" -eq 3 ] || fail 'usage: audit-apk.sh <apk> <public-key> <version>'
+[ "$(id -u)" -eq 0 ] || fail 'the clean-install audit must run as root'
+
+apk_path="$(realpath "$1")"
+public_key_path="$(realpath "$2")"
+expected_version="$3"
+expected_apk_name="sitepull-cli-$expected_version-r0.apk"
+expected_key_name="sitepull-alpine-v$expected_version.rsa.pub"
+expected_packager='Isaiah Neal <70036686+isaiahneal@users.noreply.github.com>'
+
+[ "$(basename "$apk_path")" = "$expected_apk_name" ] ||
+  fail "unexpected APK name: $(basename "$apk_path")"
+[ "$(basename "$public_key_path")" = "$expected_key_name" ] ||
+  fail "unexpected public-key name: $(basename "$public_key_path")"
+[ -s "$apk_path" ] || fail 'APK is missing or empty'
+[ -s "$public_key_path" ] || fail 'public key is missing or empty'
+actual_packager="$(
+  tar -xOf "$apk_path" .PKGINFO 2>/dev/null |
+    awk -F' = ' '$1 == "packager" { print $2 }'
+)"
+[ "$actual_packager" = "$expected_packager" ] ||
+  fail "unexpected APK packager: $actual_packager"
+
+alpine_release="$(cut -d. -f1,2 /etc/alpine-release 2>/dev/null || true)"
+[ "$alpine_release" = '3.24' ] || fail 'this audit must run on Alpine 3.24'
+[ "$(uname -m)" = 'x86_64' ] || fail 'this audit must run natively on x86_64'
+
+trusted_key="/etc/apk/keys/$expected_key_name"
+install -m644 "$public_key_path" "$trusted_key"
+apk verify "$apk_path"
+apk add --no-cache "$apk_path"
+
+apk info --exists sitepull-cli
+installed_version="$(
+  apk query --from installed --fields version sitepull-cli |
+    awk -F': ' '$1 == "Version" { print $2 }'
+)"
+[ "$installed_version" = "$expected_version-r0" ] ||
+  fail "expected package version $expected_version-r0, installed $installed_version"
+
+[ "$(command -v sitepull)" = '/usr/bin/sitepull' ] || fail 'global launcher is unavailable'
+[ "$(stat -c '%u:%g:%a' /usr/bin/sitepull)" = '0:0:755' ] ||
+  fail 'global launcher must be root-owned mode 755'
+grep -Fqx 'export SITEPULL_SYSTEM_CHROMIUM=/usr/bin/chromium-browser' /usr/bin/sitepull ||
+  fail 'global launcher does not select Alpine Chromium'
+[ -x /usr/bin/chromium-browser ] || fail 'Alpine Chromium is unavailable'
+[ -r /usr/lib/sitepull-cli/node_modules/@sitepull/core/dist/index.js ] ||
+  fail 'deployed Sitepull core is unavailable'
+grep -Fq 'chromiumSandbox: true' \
+  /usr/lib/sitepull-cli/node_modules/@sitepull/core/dist/index.js ||
+  fail 'deployed Chromium launch policy does not require its sandbox'
+embedded_browser_directory="$(
+  find /usr/lib/sitepull-cli -type d \
+    \( -name '.local-browsers' -o -name '.playwright-browsers' \) \
+    -print -quit
+)"
+[ -z "$embedded_browser_directory" ] ||
+  fail "installed payload contains an embedded browser: $embedded_browser_directory"
+
+node_major="$(node -p "process.versions.node.split('.')[0]")"
+[ "$node_major" -ge 24 ] || fail "Node.js 24 or newer is required, found $(node --version)"
+sitepull_version="$(sitepull --version)"
+case "$sitepull_version" in
+  "sitepull/$expected_version linux-x64 node-v"*) ;;
+  *) fail "unexpected CLI version output: $sitepull_version" ;;
+esac
+
+smoke_user='sitepull-smoke'
+smoke_home="/home/$smoke_user"
+capture_root="$(mktemp -d /tmp/sitepull-alpine-capture.XXXXXX)"
+cleanup() {
+  rm -rf -- "$capture_root"
+}
+trap cleanup EXIT HUP INT TERM
+
+adduser -D -h "$smoke_home" "$smoke_user"
+chown "$smoke_user:$smoke_user" "$capture_root"
+
+if su "$smoke_user" -s /bin/sh -c \
+  "HOME='$smoke_home' sitepull pull example.com --engine webkit --depth 0 --max-pages 1 --output '$capture_root' --quiet" \
+  >"$capture_root/wrong-engine.stdout" 2>"$capture_root/wrong-engine.stderr"; then
+  fail 'the Chromium-only Alpine package accepted WebKit'
+fi
+grep -Fqi 'supports chromium only' "$capture_root/wrong-engine.stderr" ||
+  fail 'the unsupported-engine error was not actionable'
+
+capture_path="$(
+  su "$smoke_user" -s /bin/sh -c \
+    "HOME='$smoke_home' sitepull pull example.com --headless --depth 0 --max-pages 1 --viewports desktop --output '$capture_root' --quiet"
+)"
+
+case "$capture_path" in
+  "$capture_root"/*) ;;
+  *) fail "capture escaped its authorized output root: $capture_path" ;;
+esac
+[ -s "$capture_path/manifest.json" ] || fail 'capture manifest is missing'
+[ -s "$capture_path/AI_CONTEXT.md" ] || fail 'capture AI context is missing'
+
+# The JavaScript template literals are intentionally single-quoted for the shell.
+# shellcheck disable=SC2016
+node -e '
+  const fs = require("node:fs");
+  const manifest = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+  if (manifest.status !== "completed") throw new Error(`capture status: ${manifest.status}`);
+  if (manifest.summary.status !== "completed") {
+    throw new Error(`capture summary status: ${manifest.summary.status}`);
+  }
+  if (manifest.config.engine !== "chromium") throw new Error(`engine: ${manifest.config.engine}`);
+  if (manifest.summary.counts.pages !== 1) {
+    throw new Error(`captured pages: ${manifest.summary.counts.pages}`);
+  }
+  if (manifest.source.normalizedUrl !== "https://example.com/") {
+    throw new Error(`normalized URL: ${manifest.source.normalizedUrl}`);
+  }
+' "$capture_path/manifest.json"
+
+printf 'Alpine package, trusted signature, global CLI, sandboxed Chromium, and one-page capture verified.\n'

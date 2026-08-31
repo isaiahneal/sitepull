@@ -1,7 +1,9 @@
 import {
   chmod,
+  link,
   mkdir,
   mkdtemp,
+  readdir,
   readFile,
   readlink,
   rm,
@@ -14,9 +16,13 @@ import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import {
+  createCommandExclusively,
+  copyDeploymentIsolated,
   defaultCliBinDirectory,
   defaultCliDataDirectory,
   installGlobalCli,
+  installImmutableDeployment,
+  replaceCommandAtomically,
   windowsCliLauncher,
 } from './install-global-cli.js';
 
@@ -39,6 +45,100 @@ afterEach(async () => {
 });
 
 describe('global CLI installer', () => {
+  it('physically isolates a deployment from pnpm workspace hardlinks', async () => {
+    const { root } = await fixture();
+    const backingFile = path.join(root, 'workspace-output.js');
+    const sourceDirectory = path.join(root, 'pnpm-deployment');
+    const sourceFile = path.join(sourceDirectory, 'nested', 'output.js');
+    const copiedDirectory = path.join(root, 'isolated-deployment');
+    await mkdir(path.dirname(sourceFile), { recursive: true });
+    await writeFile(backingFile, 'before\n');
+    await link(backingFile, sourceFile);
+    await symlink('nested/output.js', path.join(sourceDirectory, 'output-link.js'));
+
+    await copyDeploymentIsolated(sourceDirectory, copiedDirectory);
+    await writeFile(backingFile, 'after\n');
+
+    expect(await readFile(sourceFile, 'utf8')).toBe('after\n');
+    expect(await readFile(path.join(copiedDirectory, 'nested', 'output.js'), 'utf8')).toBe(
+      'before\n',
+    );
+    expect(await readlink(path.join(copiedDirectory, 'output-link.js'))).toBe('nested/output.js');
+  });
+
+  it('leaves the previous command intact when an atomic cutover fails', async () => {
+    const { root, source, bin } = await fixture();
+    const destination = path.join(bin, 'sitepull');
+    const nextSource = path.join(root, 'next.js');
+    await mkdir(bin);
+    await writeFile(nextSource, '#!/usr/bin/env node\n');
+    await symlink(source, destination);
+
+    await expect(
+      replaceCommandAtomically(
+        destination,
+        (temporaryPath) => symlink(nextSource, temporaryPath),
+        () => Promise.reject(new Error('injected cutover failure')),
+      ),
+    ).rejects.toThrow(/injected cutover failure/u);
+
+    expect(await readlink(destination)).toBe(source);
+    expect(await readdir(bin)).toEqual(['sitepull']);
+  });
+
+  it('rejects a corrupted third-party dependency in an immutable deployment', async () => {
+    const { root } = await fixture();
+    const existingDirectory = path.join(root, 'versions', '0.4.0');
+    const candidateDirectory = path.join(root, 'candidate');
+    for (const directory of [existingDirectory, candidateDirectory]) {
+      await mkdir(path.join(directory, 'node_modules', 'cac'), { recursive: true });
+      await writeFile(path.join(directory, 'package.json'), '{"version":"0.4.0"}\n');
+      await writeFile(path.join(directory, 'node_modules', 'cac', 'index.js'), 'export {};\n');
+    }
+
+    await expect(installImmutableDeployment(candidateDirectory, existingDirectory)).resolves.toBe(
+      false,
+    );
+    await writeFile(
+      path.join(existingDirectory, 'node_modules', 'cac', 'index.js'),
+      'throw new Error("corrupt");\n',
+    );
+    await expect(installImmutableDeployment(candidateDirectory, existingDirectory)).rejects.toThrow(
+      /different contents/u,
+    );
+  });
+
+  it('never exposes a partial command during exclusive first installation', async () => {
+    const { bin } = await fixture();
+    const destination = path.join(bin, 'sitepull.cmd');
+    await mkdir(bin);
+
+    await expect(
+      createCommandExclusively(destination, async (temporaryPath) => {
+        await writeFile(temporaryPath, '@ECHO OFF\r\npartial');
+        throw new Error('injected write failure');
+      }),
+    ).rejects.toThrow(/injected write failure/u);
+
+    expect(await readdir(bin)).toEqual([]);
+  });
+
+  it('does not clobber a command created concurrently during first installation', async () => {
+    const { bin } = await fixture();
+    const destination = path.join(bin, 'sitepull.cmd');
+    await mkdir(bin);
+    await writeFile(destination, 'unrelated\n');
+
+    await expect(
+      createCommandExclusively(destination, (temporaryPath) =>
+        writeFile(temporaryPath, '@ECHO OFF\r\n', { flag: 'wx' }),
+      ),
+    ).rejects.toMatchObject({ code: 'EEXIST' });
+
+    expect(await readFile(destination, 'utf8')).toBe('unrelated\n');
+    expect(await readdir(bin)).toEqual(['sitepull.cmd']);
+  });
+
   it('chooses conventional per-user command directories', () => {
     expect(defaultCliBinDirectory('darwin', '/Users/test', undefined)).toBe(
       path.join('/Users/test', '.local', 'bin'),

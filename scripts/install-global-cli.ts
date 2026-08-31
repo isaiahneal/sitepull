@@ -1,16 +1,19 @@
 import { execFile } from 'node:child_process';
+import { createHash, randomUUID, type Hash } from 'node:crypto';
 import { constants } from 'node:fs';
 import {
   access,
+  cp,
+  link,
   lstat,
   mkdir,
   mkdtemp,
+  readdir,
   readFile,
   readlink,
   rename,
   rm,
   symlink,
-  unlink,
   writeFile,
 } from 'node:fs/promises';
 import { homedir } from 'node:os';
@@ -20,6 +23,167 @@ import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
 const MANAGED_WINDOWS_LAUNCHER_MARKER = '@REM Managed by the Sitepull installer';
+const VOLATILE_DEPLOYMENT_PATHS = new Set([
+  'pnpm-lock.yaml',
+  path.join('node_modules', '.modules.yaml'),
+  path.join('node_modules', '.pnpm', 'lock.yaml'),
+  path.join('node_modules', '.pnpm-workspace-state-v1.json'),
+]);
+
+type AtomicRename = (source: string, destination: string) => Promise<void>;
+
+export async function replaceCommandAtomically(
+  destination: string,
+  prepareTemporaryCommand: (temporaryPath: string) => Promise<void>,
+  atomicRename: AtomicRename = rename,
+): Promise<void> {
+  const temporaryPath = path.join(
+    path.dirname(destination),
+    `.${path.basename(destination)}.sitepull-${process.pid}-${randomUUID()}`,
+  );
+  try {
+    await prepareTemporaryCommand(temporaryPath);
+    await atomicRename(temporaryPath, destination);
+  } finally {
+    await rm(temporaryPath, { force: true }).catch(() => undefined);
+  }
+}
+
+export async function createCommandExclusively(
+  destination: string,
+  prepareTemporaryCommand: (temporaryPath: string) => Promise<void>,
+  createHardlink: AtomicRename = link,
+): Promise<void> {
+  const temporaryPath = path.join(
+    path.dirname(destination),
+    `.${path.basename(destination)}.sitepull-${process.pid}-${randomUUID()}`,
+  );
+  try {
+    await prepareTemporaryCommand(temporaryPath);
+    await createHardlink(temporaryPath, destination);
+  } finally {
+    await rm(temporaryPath, { force: true }).catch(() => undefined);
+  }
+}
+
+async function appendDeploymentFingerprint(
+  root: string,
+  relativePath: string,
+  hash: Hash,
+): Promise<void> {
+  if (VOLATILE_DEPLOYMENT_PATHS.has(relativePath)) return;
+  const target = path.join(root, relativePath);
+  const metadata = await lstat(target);
+  if (metadata.isDirectory()) {
+    hash.update(`directory\0${relativePath}\0${metadata.mode & 0o777}\0`);
+    const entries = await readdir(target, { withFileTypes: true });
+    for (const entry of entries.toSorted((left, right) => left.name.localeCompare(right.name))) {
+      await appendDeploymentFingerprint(root, path.join(relativePath, entry.name), hash);
+    }
+    return;
+  }
+  if (metadata.isSymbolicLink()) {
+    hash.update(`symlink\0${relativePath}\0${await readlink(target)}\0`);
+    return;
+  }
+  if (!metadata.isFile()) {
+    throw new Error(`The Sitepull deployment contains an unsupported entry at ${relativePath}.`);
+  }
+  hash.update(`file\0${relativePath}\0${metadata.mode & 0o777}\0`);
+  hash.update(await readFile(target));
+  hash.update('\0');
+}
+
+async function deploymentFingerprint(root: string): Promise<string> {
+  const hash = createHash('sha256');
+  await appendDeploymentFingerprint(root, '', hash);
+  return hash.digest('hex');
+}
+
+async function assertNoHardlinkedRegularFiles(directory: string): Promise<void> {
+  for (const entry of await readdir(directory, { withFileTypes: true })) {
+    const target = path.join(directory, entry.name);
+    if (entry.isDirectory()) {
+      await assertNoHardlinkedRegularFiles(target);
+      continue;
+    }
+    if (!entry.isFile()) continue;
+    if ((await lstat(target)).nlink > 1) {
+      throw new Error(`The Sitepull deployment contains a mutable hardlink at ${target}.`);
+    }
+  }
+}
+
+async function assertIndependentRegularFiles(
+  sourceDirectory: string,
+  copiedDirectory: string,
+): Promise<void> {
+  for (const entry of await readdir(sourceDirectory, { withFileTypes: true })) {
+    const source = path.join(sourceDirectory, entry.name);
+    const copied = path.join(copiedDirectory, entry.name);
+    if (entry.isDirectory()) {
+      await assertIndependentRegularFiles(source, copied);
+      continue;
+    }
+    if (!entry.isFile()) continue;
+
+    const [sourceMetadata, copiedMetadata] = await Promise.all([lstat(source), lstat(copied)]);
+    if (!copiedMetadata.isFile()) {
+      throw new Error(`The isolated Sitepull deployment is missing ${entry.name}.`);
+    }
+    if (copiedMetadata.nlink > 1) {
+      throw new Error(`The isolated Sitepull deployment retains a hardlink for ${entry.name}.`);
+    }
+    if (
+      process.platform !== 'win32' &&
+      sourceMetadata.dev === copiedMetadata.dev &&
+      sourceMetadata.ino === copiedMetadata.ino
+    ) {
+      throw new Error(`The isolated Sitepull deployment still shares storage for ${entry.name}.`);
+    }
+  }
+}
+
+export async function copyDeploymentIsolated(
+  sourceDirectory: string,
+  copiedDirectory: string,
+): Promise<void> {
+  await cp(sourceDirectory, copiedDirectory, {
+    errorOnExist: true,
+    force: false,
+    recursive: true,
+    verbatimSymlinks: true,
+  });
+  await assertIndependentRegularFiles(sourceDirectory, copiedDirectory);
+}
+
+export async function installImmutableDeployment(
+  candidateDirectory: string,
+  deploymentDirectory: string,
+): Promise<boolean> {
+  try {
+    const existing = await lstat(deploymentDirectory);
+    if (!existing.isDirectory() || existing.isSymbolicLink()) {
+      throw new Error(`Refusing to replace the existing path at ${deploymentDirectory}.`);
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    await rename(candidateDirectory, deploymentDirectory);
+    return true;
+  }
+
+  await assertNoHardlinkedRegularFiles(deploymentDirectory);
+  const [existingFingerprint, candidateFingerprint] = await Promise.all([
+    deploymentFingerprint(deploymentDirectory),
+    deploymentFingerprint(candidateDirectory),
+  ]);
+  if (existingFingerprint !== candidateFingerprint) {
+    throw new Error(
+      `Sitepull CLI ${path.basename(deploymentDirectory)} is already installed with different contents. Bump the package version before replacing an immutable deployment.`,
+    );
+  }
+  return false;
+}
 
 export function defaultCliBinDirectory(
   platform: NodeJS.Platform,
@@ -74,8 +238,9 @@ async function installPosixLink(
       if (!managedSourceRoots.some((root) => isInsideOrEqual(root, linkedPath))) {
         throw new Error(`Refusing to replace the existing symlink at ${destination}`);
       }
-      await unlink(destination);
-      await symlink(source, destination, 'file');
+      await replaceCommandAtomically(destination, (temporaryPath) =>
+        symlink(source, temporaryPath, 'file'),
+      );
     }
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
@@ -107,11 +272,15 @@ async function installWindowsLauncher(
       ) {
         throw new Error(`Refusing to replace the existing command at ${destination}`);
       }
-      await writeFile(destination, launcher, { encoding: 'utf8' });
+      await replaceCommandAtomically(destination, (temporaryPath) =>
+        writeFile(temporaryPath, launcher, { encoding: 'utf8', flag: 'wx' }),
+      );
     }
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-    await writeFile(destination, launcher, { encoding: 'utf8', flag: 'wx' });
+    await createCommandExclusively(destination, (temporaryPath) =>
+      writeFile(temporaryPath, launcher, { encoding: 'utf8', flag: 'wx' }),
+    );
   }
 }
 
@@ -209,8 +378,7 @@ export async function deployAndInstallGlobalCli(
   const deploymentDirectory = path.join(versionsDirectory, cliPackage.version);
   await mkdir(versionsDirectory, { recursive: true });
   const stagingDirectory = await mkdtemp(path.join(versionsDirectory, `.${cliPackage.version}-`));
-  const previousDirectory = `${deploymentDirectory}.previous-${process.pid}`;
-  let previousExists = false;
+  const isolatedStagingDirectory = `${stagingDirectory}-isolated`;
 
   try {
     const pnpm = pnpmInvocation();
@@ -219,6 +387,7 @@ export async function deployAndInstallGlobalCli(
       [
         ...pnpm.prefixArgs,
         '--config.inject-workspace-packages=true',
+        '--config.package-import-method=copy',
         '--filter',
         '@sitepull/cli',
         'deploy',
@@ -235,9 +404,13 @@ export async function deployAndInstallGlobalCli(
         maxBuffer: 10 * 1024 * 1024,
       },
     );
-    await access(path.join(stagingDirectory, 'dist', 'bin.js'), constants.R_OK | constants.X_OK);
+    await copyDeploymentIsolated(stagingDirectory, isolatedStagingDirectory);
+    await access(
+      path.join(isolatedStagingDirectory, 'dist', 'bin.js'),
+      constants.R_OK | constants.X_OK,
+    );
     const deployedPackage = JSON.parse(
-      await readFile(path.join(stagingDirectory, 'package.json'), 'utf8'),
+      await readFile(path.join(isolatedStagingDirectory, 'package.json'), 'utf8'),
     ) as { name?: unknown; version?: unknown };
     if (
       deployedPackage.name !== '@sitepull/cli' ||
@@ -246,14 +419,10 @@ export async function deployAndInstallGlobalCli(
       throw new Error('The deployed Sitepull CLI package does not match the requested version.');
     }
 
-    await rm(previousDirectory, { recursive: true, force: true });
-    try {
-      await rename(deploymentDirectory, previousDirectory);
-      previousExists = true;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-    }
-    await rename(stagingDirectory, deploymentDirectory);
+    const deploymentCreated = await installImmutableDeployment(
+      isolatedStagingDirectory,
+      deploymentDirectory,
+    );
 
     try {
       const installed = await installGlobalCli({
@@ -263,15 +432,17 @@ export async function deployAndInstallGlobalCli(
         source: path.join(deploymentDirectory, 'dist', 'bin.js'),
         managedSourceRoots: [versionsDirectory, path.join(repositoryRoot, 'apps', 'cli', 'dist')],
       });
-      if (previousExists) await rm(previousDirectory, { recursive: true, force: true });
       return { ...installed, deploymentDirectory };
     } catch (error) {
-      await rm(deploymentDirectory, { recursive: true, force: true });
-      if (previousExists) await rename(previousDirectory, deploymentDirectory);
+      if (deploymentCreated) await rm(deploymentDirectory, { recursive: true, force: true });
       throw error;
     }
   } finally {
-    await rm(stagingDirectory, { recursive: true, force: true });
+    await Promise.all(
+      [stagingDirectory, isolatedStagingDirectory].map((directory) =>
+        rm(directory, { recursive: true, force: true }),
+      ),
+    );
   }
 }
 

@@ -66,6 +66,21 @@ describe('parsePullCommand', () => {
     expect(parsed.quiet).toBe(true);
   });
 
+  it('uses and enforces a package-provided system browser engine', () => {
+    const systemBrowserEnvironment = {
+      ...environment,
+      defaultEngine: 'chromium',
+      supportedEngines: ['chromium'],
+    } as const;
+
+    expect(
+      parsePullCommand('example.com', {}, systemBrowserEnvironment).request.config.engine,
+    ).toBe('chromium');
+    expect(() =>
+      parsePullCommand('example.com', { engine: 'webkit' }, systemBrowserEnvironment),
+    ).toThrow(/supports chromium only/iu);
+  });
+
   it('selects Full Capture when --zip is used without --ai-pack', () => {
     expect(parsePullCommand('https://example.com', { zip: true }, environment).exportMode).toBe(
       'full-capture',

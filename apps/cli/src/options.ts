@@ -7,6 +7,7 @@ import {
   normalizeHttpUrlInput,
   VIEWPORT_PRESETS,
   type CrawlRequest,
+  type BrowserEngine,
   type ExportMode,
   type Viewport,
 } from '@sitepull/contracts';
@@ -36,6 +37,8 @@ export interface ParsedPullCommand {
 export interface ParseEnvironment {
   readonly homeDirectory?: string;
   readonly currentDirectory?: string;
+  readonly defaultEngine?: BrowserEngine;
+  readonly supportedEngines?: readonly BrowserEngine[];
 }
 
 export class UsageError extends Error {
@@ -178,7 +181,16 @@ export function parsePullCommand(
   if (maxPages !== undefined && (maxPages < 1 || maxPages > 500)) {
     throw new UsageError('--max-pages must be between 1 and 500.');
   }
-  const engine = parseEngine(options.engine);
+  const engine = parseEngine(options.engine) ?? environment.defaultEngine;
+  if (
+    engine !== undefined &&
+    environment.supportedEngines !== undefined &&
+    !environment.supportedEngines.includes(engine)
+  ) {
+    throw new UsageError(
+      `This Sitepull package supports ${environment.supportedEngines.join(', ')} only.`,
+    );
+  }
   const viewports = parseViewports(options.viewports);
   const pageTimeoutMs = parseTimeoutMilliseconds(options.timeout);
   const includeSubdomains = optionalBoolean(options.includeSubdomains, '--include-subdomains');

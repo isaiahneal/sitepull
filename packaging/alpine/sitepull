@@ -1,0 +1,4 @@
+#!/bin/sh
+
+export SITEPULL_SYSTEM_CHROMIUM=/usr/bin/chromium-browser
+exec /usr/bin/node /usr/lib/sitepull-cli/dist/bin.js "$@"

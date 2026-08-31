@@ -29,21 +29,23 @@ The output combines rendered HTML, semantic DOM summaries, delivered resources, 
 - A native desktop inspector with searchable history, saved capture recipes, **Capture Again**, and Overview, Pages, Design, Components, Assets, Files, and Logs workspaces
 - A first-class, script-friendly CLI that is headless by default
 
-WebKit is the default and bundled desktop rendering engine. Chromium and Firefox are optional for CLI/source-development captures when their Playwright browser packages are installed.
+WebKit is the default and bundled desktop rendering engine. Chromium and Firefox are optional for CLI/source-development captures when their Playwright browser packages are installed. The Fedora and Alpine native CLI packages instead use each distribution's maintained Chromium build; those packages support the Chromium engine only.
 
 ## Get Sitepull
 
-Desktop packages are published on the [GitHub Releases page](https://github.com/isaiahneal/sitepull/releases):
+Release packages are published on the [GitHub Releases page](https://github.com/isaiahneal/sitepull/releases):
 
 - macOS 15+ Apple silicon (arm64): DMG and ZIP
 - macOS 15+ Intel (x64): DMG and ZIP
 - Ubuntu 24.04 x64: distribution-matched DEB
 - Debian 12 and Debian 13 x64: distribution-matched DEBs
 - Windows x64: Squirrel Setup executable and ZIP
+- Fedora 44 x64: native headless CLI RPM
+- Alpine 3.24 x64: native headless CLI APK and release signing key
 
-Each desktop package contains its own Playwright WebKit runtime. Release artifacts are built on their matching operating system so the embedded browser is native to that platform.
+Each desktop package contains its own Playwright WebKit runtime. Fedora and Alpine install `sitepull` globally at `/usr/bin/sitepull` and use the distribution's native Chromium package, avoiding an unsupported Ubuntu/glibc browser transplant. Release artifacts are built and clean-install tested against their named operating system.
 
-The community `v0.3.1` artifacts are not backed by Apple Developer ID, Microsoft Authenticode, or Linux repository signing. See [Distribution trust](#distribution-trust) before installing a release artifact.
+The community `v0.4.0` artifacts are not backed by Apple Developer ID, Microsoft Authenticode, or a persistent Linux repository key. See [Distribution trust](#distribution-trust) before installing a release artifact.
 
 ## Requirements
 
@@ -52,10 +54,30 @@ Packaged desktop builds include Node/Electron and the matching Playwright WebKit
 - Node.js `24.20.0` (current LTS line used by this release)
 - pnpm `11.24.0`
 - macOS 15+, Windows x64, Ubuntu 24.04 x64, Debian 12 x64, or Debian 13 x64 for a packaged desktop build
+- Fedora 44 x64 or Alpine 3.24 x64 for a native system-Chromium CLI package
 - Xcode Command Line Tools for local macOS DMG creation
 - `fakeroot` for local Ubuntu or Debian DEB creation
 
 Chromium and Firefox are optional CLI/development engines and require their corresponding Playwright browser packages.
+
+### Native Fedora and Alpine CLI
+
+On Fedora 44, download the RPM from the current release and install it with DNF:
+
+```bash
+sudo dnf install ./sitepull-cli-0.4.0-1.fc44.x86_64.rpm
+sitepull pull example.com --headless --ai-pack --zip
+```
+
+On Alpine 3.24, download both the APK and its release-specific public key. Install the attested key before the signed package:
+
+```bash
+sudo install -m 0644 sitepull-alpine-v0.4.0.rsa.pub /etc/apk/keys/
+sudo apk add ./sitepull-cli-0.4.0-r0.apk
+sitepull pull example.com --headless --ai-pack --zip
+```
+
+Both packages install Node.js 24 and Chromium through the native package manager and place `sitepull` on the system `PATH`. They intentionally default to and permit only `--engine chromium`; Playwright WebKit and Electron are not native to Alpine/musl, and Playwright's current WebKit build does not match Fedora 44's browser-library ABI.
 
 ## Installation from source
 
@@ -82,7 +104,7 @@ pnpm install:cli-global
 sitepull --version
 ```
 
-The installer first creates a complete, versioned production CLI deployment in the operating system's per-user application-data directory. On macOS and Linux it points an idempotent `~/.local/bin/sitepull` link at that stable deployment; on Windows it creates a managed `sitepull.cmd` launcher in `%LOCALAPPDATA%\Microsoft\WindowsApps`, which is normally already on the per-user `PATH`. The command therefore survives moving or deleting the source checkout. The installer refuses to overwrite unrelated commands and reports if the selected directory is missing from `PATH`; `SITEPULL_BIN_DIR` can select another command directory. Once that directory is on the shell path, `sitepull` is available in macOS Terminal, Ghostty, PowerShell, Windows Terminal, and other new shells without a repository-relative path.
+The installer first creates a complete, immutable versioned production CLI deployment in the operating system's per-user application-data directory and physically isolates it from pnpm's workspace and content store. On macOS and Linux it atomically points an idempotent `~/.local/bin/sitepull` link at that stable deployment; on Windows it atomically replaces a managed `sitepull.cmd` launcher in `%LOCALAPPDATA%\Microsoft\WindowsApps`, which is normally already on the per-user `PATH`. The command therefore survives moving or deleting the source checkout, rebuilding the checkout cannot mutate an installed version, and a failed cutover leaves the previous command intact. The installer refuses to overwrite unrelated commands and reports if the selected directory is missing from `PATH`; `SITEPULL_BIN_DIR` can select another command directory. Once that directory is on the shell path, `sitepull` is available in macOS Terminal, Ghostty, PowerShell, Windows Terminal, and other new shells without a repository-relative path.
 
 ## Intelligent URL input
 
@@ -254,20 +276,22 @@ pnpm make:linux:debian13
 pnpm make:windows
 ```
 
+The Fedora RPM and Alpine APK headless CLI builders run in pinned x64 containers through their target-specific scripts under `packaging/`. They create a production-only CLI dependency closure, native package metadata, and the global `/usr/bin/sitepull` launcher.
+
 `pnpm make:linux` remains an alias for the Ubuntu 24.04 target. Run each Linux command on its named distribution: the build downloads that distribution's Playwright WebKit ABI and writes a uniquely revised DEB. Platform-specific unpacked build intermediates are also available through `pnpm package:mac`, `pnpm package:linux`, and `pnpm package:windows`. Forge writes output below `apps/desktop/out/`. Installing a Linux DEB safely establishes Electron's sandbox-helper ownership and permissions.
 
-Build each target on its native operating system and architecture. The repository's distribution workflow does exactly that on Apple-silicon and Intel macOS 15 runners, Ubuntu 24.04, Debian 12, Debian 13, and Windows. Distribution waits for the reusable quality workflow and verifies that a release tag exactly matches `package.json` plus a nonempty versioned release-notes file before any native build begins. External workflow actions and Linux build images are pinned to immutable identities. Each runner verifies exact maker outputs, Electron fuse state, the packaged app's own Playwright module resolution, embedded WebKit launch, preload/IPC bridge, and renderer startup. macOS additionally verifies the bundle's internal ad-hoc signature consistency and the native architecture of both Electron and WebKit. The Ubuntu DEB is installed and smoke-tested on the native runner, then independently clean-installed in a pinned Ubuntu container for its package and dependency audit. Each Debian DEB is clean-installed on its matching distribution, audited, and smoke-tested as an unprivileged user. These Linux gates verify package identity, dependency closure, executable layout, embedded GTK/WPE WebKit binaries, and the root-owned `4755` sandbox helper. The release gate rejects a missing or extra native asset before checksums, attestations, or publication.
+Build each target on its native operating system and architecture. The repository's distribution workflow does exactly that on Apple-silicon and Intel macOS 15 runners, Ubuntu 24.04, Debian 12, Debian 13, Fedora 44, Alpine 3.24, and Windows. Distribution waits for the reusable quality workflow and verifies that a release tag exactly matches `package.json` plus a nonempty versioned release-notes file before any native build begins. External workflow actions and Linux build images are pinned to immutable identities. Each desktop runner verifies exact maker outputs, Electron fuse state, the packaged app's own Playwright module resolution, embedded WebKit launch, preload/IPC bridge, and renderer startup. macOS additionally verifies the bundle's internal ad-hoc signature consistency and the native architecture of both Electron and WebKit. The DEBs are clean-installed on their matching distributions, audited, and smoke-tested as unprivileged users. Fedora and Alpine independently build and clean-install their native CLI packages, verify global command and package identity, then complete a real one-page Sitepull capture through sandboxed system Chromium as an unprivileged user. The release gate rejects a missing or extra native asset before checksums, attestations, or publication.
 
 ## Distribution trust
 
 Electron fuses harden every package. Local macOS packages are re-signed ad hoc after fuse mutation and verified for internal signature consistency, but ad-hoc signing is not an Apple Developer ID signature and cannot be notarized. The community artifacts do not claim hardened runtime, and Sitepull does not weaken the bundle with the disable-library-validation entitlement. A hardened-runtime, notarized macOS distribution requires an Apple Developer identity and notarization credentials.
 
-Windows packages likewise require an Authenticode certificate for publisher trust, and Linux packages require a repository/package-signing workflow for signed distribution. Those private credentials are intentionally absent from this public repository and its `v0.3.1` community builds.
+Windows packages likewise require an Authenticode certificate for publisher trust, and Linux packages require a persistent repository/package-signing workflow for durable publisher trust. Those private credentials are intentionally absent from this public repository and its `v0.4.0` community builds. The Alpine APK is signed by a release-specific key published beside it; verify the key's checksum and GitHub provenance before installing it. That key authenticates the matching release artifact, but it is not a long-lived Alpine repository identity.
 
 For tagged releases produced by the current workflow, GitHub Actions generates `SHA256SUMS.txt`, verifies that it covers and matches every staged asset before publication, and records Sigstore-backed SLSA provenance attestations for every native asset and for the checksum manifest itself. After downloading an asset, verify its provenance with GitHub CLI:
 
 ```bash
-gh attestation verify ./Sitepull-0.3.1-arm64.dmg \
+gh attestation verify ./Sitepull-0.4.0-arm64.dmg \
   --repo isaiahneal/sitepull \
   --signer-workflow isaiahneal/sitepull/.github/workflows/distribution.yml
 ```
@@ -281,12 +305,13 @@ An attestation proves which repository and workflow produced the exact bytes; it
 - Content behind login, anti-bot controls, CAPTCHAs, paywalls, or private-network hosts is currently intentionally unsupported.
 - Playwright WebKit is useful for Safari-adjacent behavior, but it is not the Safari application.
 - Packaged desktop builds intentionally embed only WebKit; Chromium and Firefox remain optional CLI/source-development engines.
-- Packaged Linux desktops are targeted and clean-install tested on Ubuntu 24.04, Debian 12, and Debian 13 x64. Use the DEB named for the installed distribution; their WebKit ABIs and package dependencies are intentionally distinct. A generic Linux ZIP is not published because an archive cannot safely install Electron's root-owned setuid sandbox helper. RPM and Alpine packages are also not published because the pinned Playwright WebKit release has no matching Fedora or musl runtime build.
+- Packaged Linux desktops are targeted and clean-install tested on Ubuntu 24.04, Debian 12, and Debian 13 x64. Use the DEB named for the installed distribution; their WebKit ABIs and package dependencies are intentionally distinct. A generic Linux desktop ZIP is not published because an archive cannot safely install Electron's root-owned setuid sandbox helper.
+- Fedora 44 and Alpine 3.24 are supported by native x64 headless CLI packages backed by their maintained system Chromium. They do not include the Electron desktop inspector or claim WebKit/Safari fidelity. Alpine's musl ABI cannot run the official Electron or Playwright WebKit binaries, while Fedora 44's ICU, JPEG, and media-library ABIs do not match Playwright's Ubuntu WebKit build.
 - WebKit page workers are disabled during capture so worker-only WebTransport cannot bypass the validated HTTP proxy. Sites that require dedicated/shared workers for rendering may lose that worker-driven behavior; Chromium and Firefox instead use engine-level non-proxied transport restrictions.
 - Resource-body capture defaults to 25 MiB per response, 512 MiB across the capture, and three concurrent body reads. Responses without a trustworthy content length still require one complete in-memory Playwright buffer before their actual size can be enforced.
 - Responsive screenshots reuse one stabilized page and resize it through the configured viewports. DOM/computed-style evidence is extracted at the first configured viewport, so JavaScript or server behavior selected only during an initial viewport-specific load requires a separate capture.
 - Component names and semantic design roles are deterministic inferences. Raw measurements, frequencies, routes, and signatures remain available for downstream judgment.
-- Official publisher signing, macOS hardened runtime, and notarization are not configured for the public `v0.3.1` artifacts. GitHub attestations establish workflow provenance, not publisher identity.
+- Official publisher signing, macOS hardened runtime, and notarization are not configured for the public `v0.4.0` artifacts. GitHub attestations establish workflow provenance, not publisher identity.
 
 ## License
 

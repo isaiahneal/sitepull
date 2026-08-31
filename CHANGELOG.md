@@ -2,6 +2,29 @@
 
 All notable Sitepull releases are documented here.
 
+## [0.4.0] - 2026-08-31
+
+### Added
+
+- Native Fedora 44 x64 RPM and Alpine 3.24 x64 APK packages for the headless CLI, each installing the global `/usr/bin/sitepull` command and using the distribution-maintained Chromium browser
+- A controlled system-Chromium runtime path with an absolute executable check, Chromium-only package policy, and OS browser sandbox enforcement
+- Clean-install Fedora and Alpine gates that verify native package identity, Node/Chromium dependencies, global command resolution, unprivileged sandboxed launch, and a real one-page Sitepull capture
+- A release-specific Alpine APK signing key published and attested beside the signed package
+
+### Changed
+
+- The tagged release gate now requires an exact fourteen-file native/package asset manifest before generating checksums, provenance attestations, or the public release
+- New commits and tags use the `isaiahneal` GitHub noreply identity; the public repository, remotes, Actions, metadata, and release links remain under `isaiahneal/sitepull`
+
+### Fixed
+
+- Per-user global CLI deployments are now physically copied out of pnpm's workspace deployment, kept immutable by version, and selected through an atomic command cutover, so a later source build or failed upgrade cannot alter or strand an installed version
+
+### Compatibility
+
+- Packaged support now covers macOS 15+ on Apple silicon and Intel, Ubuntu 24.04 x64, Debian 12/13 x64, Fedora 44 x64, Alpine 3.24 x64, and Windows x64
+- Fedora and Alpine receive native headless CLI packages with Chromium rather than desktop/WebKit packages: Alpine's musl ABI cannot run official Electron or Playwright WebKit binaries, and Fedora 44 does not match Playwright's Ubuntu WebKit library ABI
+
 ## [0.3.1] - 2026-08-31
 
 ### Fixed
@@ -78,6 +101,7 @@ All notable Sitepull releases are documented here.
 - PNG dimension and decoded-pixel enforcement at capture time and again before desktop rendering
 - Deterministic fixture site plus unit, integration, packaging, and real-browser acceptance coverage
 
+[0.4.0]: https://github.com/isaiahneal/sitepull/releases/tag/v0.4.0
 [0.3.1]: https://github.com/isaiahneal/sitepull/releases/tag/v0.3.1
 [0.3.0]: https://github.com/isaiahneal/sitepull/releases/tag/v0.3.0
 [0.2.0]: https://github.com/isaiahneal/sitepull/releases/tag/v0.2.0

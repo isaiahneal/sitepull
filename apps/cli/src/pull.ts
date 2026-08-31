@@ -30,6 +30,7 @@ export interface PullDependencies {
     options?: {
       readonly signal?: AbortSignal;
       readonly onEvent?: (event: CaptureEvent) => void;
+      readonly chromiumExecutablePath?: string;
     },
   ) => Promise<CaptureExecutionResult>;
   readonly exportCaptureArchive: (options: {
@@ -55,6 +56,7 @@ export async function executePull(
   signal: AbortSignal,
   writeProgress: TextWriter,
   dependencies: PullDependencies = DEFAULT_PULL_DEPENDENCIES,
+  chromiumExecutablePath?: string,
 ): Promise<PullExecutionResult> {
   const reporter = new ProgressReporter(writeProgress, command.quiet);
   reporter.start();
@@ -68,6 +70,7 @@ export async function executePull(
     {
       signal,
       onEvent: (event) => reporter.onEvent(event),
+      ...(chromiumExecutablePath === undefined ? {} : { chromiumExecutablePath }),
     },
   );
 
