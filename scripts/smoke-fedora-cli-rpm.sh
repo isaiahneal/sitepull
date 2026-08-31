@@ -9,6 +9,11 @@ if ! command -v docker >/dev/null 2>&1; then
   echo 'Fedora smoke: Docker is required.' >&2
   exit 1
 fi
+docker_architecture="$(docker info --format '{{.Architecture}}')"
+if [[ "${docker_architecture}" != amd64 && "${docker_architecture}" != x86_64 ]]; then
+  echo "Fedora smoke: a native x86_64 Docker engine is required to verify Chromium's inner sandbox; found ${docker_architecture}." >&2
+  exit 1
+fi
 
 if [[ $# -gt 1 ]]; then
   echo 'Usage: scripts/smoke-fedora-cli-rpm.sh [path-to-rpm]' >&2

@@ -79,6 +79,7 @@ esac
 
 smoke_user='sitepull-smoke'
 smoke_home="/home/$smoke_user"
+runtime_dir="/tmp/$smoke_user-runtime"
 capture_root="$(mktemp -d /tmp/sitepull-alpine-capture.XXXXXX)"
 cleanup() {
   rm -rf -- "$capture_root"
@@ -86,15 +87,16 @@ cleanup() {
 trap cleanup EXIT HUP INT TERM
 
 adduser -D -h "$smoke_home" "$smoke_user"
+install -d -m700 -o "$smoke_user" -g "$smoke_user" "$runtime_dir"
 chown "$smoke_user:$smoke_user" "$capture_root"
 
 if ! su "$smoke_user" -s /bin/sh -c \
-  "HOME='$smoke_home' SITEPULL_CLI_ROOT=/usr/lib/sitepull-cli SITEPULL_CHROMIUM=/usr/bin/chromium-browser node /workspace/packaging/chromium/assert-sandbox.mjs"; then
+  "HOME='$smoke_home' XDG_RUNTIME_DIR='$runtime_dir' SITEPULL_CLI_ROOT=/usr/lib/sitepull-cli SITEPULL_CHROMIUM=/usr/bin/chromium-browser node /workspace/packaging/chromium/assert-sandbox.mjs"; then
   fail 'the installed Chromium sandbox is not fully active for the unprivileged CLI user'
 fi
 
 if su "$smoke_user" -s /bin/sh -c \
-  "HOME='$smoke_home' sitepull pull example.com --engine webkit --depth 0 --max-pages 1 --output '$capture_root' --quiet" \
+  "HOME='$smoke_home' XDG_RUNTIME_DIR='$runtime_dir' sitepull pull example.com --engine webkit --depth 0 --max-pages 1 --output '$capture_root' --quiet" \
   >"$capture_root/wrong-engine.stdout" 2>"$capture_root/wrong-engine.stderr"; then
   fail 'the Chromium-only Alpine package accepted WebKit'
 fi
@@ -104,7 +106,7 @@ grep -Fqi 'supports chromium only' "$capture_root/wrong-engine.stderr" ||
 capture_stdout="$capture_root/capture.stdout"
 capture_stderr="$capture_root/capture.stderr"
 if ! su "$smoke_user" -s /bin/sh -c \
-  "HOME='$smoke_home' sitepull pull example.com --headless --depth 0 --max-pages 1 --viewports desktop --output '$capture_root' --quiet" \
+  "HOME='$smoke_home' XDG_RUNTIME_DIR='$runtime_dir' sitepull pull example.com --headless --depth 0 --max-pages 1 --viewports desktop --output '$capture_root' --quiet" \
   >"$capture_stdout" 2>"$capture_stderr"; then
   printf '%s\n' 'Alpine capture stderr:' >&2
   cat "$capture_stderr" >&2
