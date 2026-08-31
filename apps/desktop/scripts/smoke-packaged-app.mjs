@@ -187,12 +187,33 @@ function outputCollector(stream) {
   return () => output.trim();
 }
 
+function childHasExited(child) {
+  return child.exitCode !== null || child.signalCode !== null;
+}
+
+function waitForChildExit(child, timeoutMs) {
+  if (childHasExited(child)) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    const finish = (exited) => {
+      clearTimeout(timeout);
+      child.off('exit', onExit);
+      resolve(exited);
+    };
+    const onExit = () => finish(true);
+    const timeout = setTimeout(() => finish(false), timeoutMs);
+    child.once('exit', onExit);
+    // Close the small race between the initial state check and listener setup.
+    if (childHasExited(child)) finish(true);
+  });
+}
+
 async function terminateProcessTree(child) {
-  if (child.pid === undefined || child.exitCode !== null) return;
+  if (child.pid === undefined || childHasExited(child)) return;
   if (platformName === 'win32') {
-    await execFileAsync('taskkill.exe', ['/PID', String(child.pid), '/T', '/F']).catch(
-      () => undefined,
-    );
+    await execFileAsync('taskkill.exe', ['/PID', String(child.pid), '/T', '/F']).catch(() => {
+      child.kill('SIGKILL');
+    });
+    await waitForChildExit(child, 5_000);
     return;
   }
   try {
@@ -200,13 +221,13 @@ async function terminateProcessTree(child) {
   } catch {
     child.kill('SIGTERM');
   }
-  await delay(1_000);
-  if (child.exitCode !== null) return;
+  if (await waitForChildExit(child, 1_000)) return;
   try {
     process.kill(-child.pid, 'SIGKILL');
   } catch {
     child.kill('SIGKILL');
   }
+  await waitForChildExit(child, 5_000);
 }
 
 async function waitForDevtoolsEndpoint(port, exitState) {
@@ -262,6 +283,7 @@ async function smokePackagedRenderer(executable) {
   const stdout = outputCollector(child.stdout);
   const stderr = outputCollector(child.stderr);
   const exitState = { value: null };
+  const closePromise = new Promise((resolve) => child.once('close', resolve));
   child.once('error', (error) => {
     exitState.value = `spawn error: ${error.message}`;
   });
@@ -340,7 +362,13 @@ async function smokePackagedRenderer(executable) {
     throw error;
   } finally {
     await terminateProcessTree(child);
-    await rm(profileRoot, { recursive: true, force: true });
+    await Promise.race([closePromise, delay(5_000)]);
+    await rm(profileRoot, {
+      recursive: true,
+      force: true,
+      maxRetries: 10,
+      retryDelay: 200,
+    });
   }
 }
 
