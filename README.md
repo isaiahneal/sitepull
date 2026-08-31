@@ -43,7 +43,7 @@ Desktop packages are published on the [GitHub Releases page](https://github.com/
 
 Each desktop package contains its own Playwright WebKit runtime. Release artifacts are built on their matching operating system so the embedded browser is native to that platform.
 
-The community `v0.3.0` artifacts are not backed by Apple Developer ID, Microsoft Authenticode, or Linux repository signing. See [Distribution trust](#distribution-trust) before installing a release artifact.
+The community `v0.3.1` artifacts are not backed by Apple Developer ID, Microsoft Authenticode, or Linux repository signing. See [Distribution trust](#distribution-trust) before installing a release artifact.
 
 ## Requirements
 
@@ -262,12 +262,12 @@ Build each target on its native operating system and architecture. The repositor
 
 Electron fuses harden every package. Local macOS packages are re-signed ad hoc after fuse mutation and verified for internal signature consistency, but ad-hoc signing is not an Apple Developer ID signature and cannot be notarized. The community artifacts do not claim hardened runtime, and Sitepull does not weaken the bundle with the disable-library-validation entitlement. A hardened-runtime, notarized macOS distribution requires an Apple Developer identity and notarization credentials.
 
-Windows packages likewise require an Authenticode certificate for publisher trust, and Linux packages require a repository/package-signing workflow for signed distribution. Those private credentials are intentionally absent from this public repository and its `v0.3.0` community builds.
+Windows packages likewise require an Authenticode certificate for publisher trust, and Linux packages require a repository/package-signing workflow for signed distribution. Those private credentials are intentionally absent from this public repository and its `v0.3.1` community builds.
 
 For tagged releases produced by the current workflow, GitHub Actions generates `SHA256SUMS.txt`, verifies that it covers and matches every staged asset before publication, and records Sigstore-backed SLSA provenance attestations for every native asset and for the checksum manifest itself. After downloading an asset, verify its provenance with GitHub CLI:
 
 ```bash
-gh attestation verify ./Sitepull-0.3.0-arm64.dmg \
+gh attestation verify ./Sitepull-0.3.1-arm64.dmg \
   --repo isaiahneal/sitepull \
   --signer-workflow isaiahneal/sitepull/.github/workflows/distribution.yml
 ```
@@ -286,7 +286,7 @@ An attestation proves which repository and workflow produced the exact bytes; it
 - Resource-body capture defaults to 25 MiB per response, 512 MiB across the capture, and three concurrent body reads. Responses without a trustworthy content length still require one complete in-memory Playwright buffer before their actual size can be enforced.
 - Responsive screenshots reuse one stabilized page and resize it through the configured viewports. DOM/computed-style evidence is extracted at the first configured viewport, so JavaScript or server behavior selected only during an initial viewport-specific load requires a separate capture.
 - Component names and semantic design roles are deterministic inferences. Raw measurements, frequencies, routes, and signatures remain available for downstream judgment.
-- Official publisher signing, macOS hardened runtime, and notarization are not configured for the public `v0.3.0` artifacts. GitHub attestations establish workflow provenance, not publisher identity.
+- Official publisher signing, macOS hardened runtime, and notarization are not configured for the public `v0.3.1` artifacts. GitHub attestations establish workflow provenance, not publisher identity.
 
 ## License
 

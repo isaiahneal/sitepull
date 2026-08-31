@@ -2,6 +2,13 @@
 
 All notable Sitepull releases are documented here.
 
+## [0.3.1] - 2026-08-31
+
+### Fixed
+
+- Linux release filenames are now canonicalized before checksum generation and attestation, so GitHub's asset-name normalization cannot make `SHA256SUMS.txt` reference a different basename from the file users download
+- Distribution-specific DEBs retain their precise internal `1~ubuntu24.04`, `1~debian12`, and `1~debian13` package revisions while using GitHub-safe dotted release asset names
+
 ## [0.3.0] - 2026-08-31
 
 ### Added
@@ -71,6 +78,7 @@ All notable Sitepull releases are documented here.
 - PNG dimension and decoded-pixel enforcement at capture time and again before desktop rendering
 - Deterministic fixture site plus unit, integration, packaging, and real-browser acceptance coverage
 
+[0.3.1]: https://github.com/isaiahneal/sitepull/releases/tag/v0.3.1
 [0.3.0]: https://github.com/isaiahneal/sitepull/releases/tag/v0.3.0
 [0.2.0]: https://github.com/isaiahneal/sitepull/releases/tag/v0.2.0
 [0.1.0]: https://github.com/isaiahneal/sitepull/releases/tag/v0.1.0

@@ -11,14 +11,33 @@ export function expectedNativeReleaseAssets(version: string): string[] {
     `Sitepull-${version}-x64.dmg`,
     `Sitepull-darwin-arm64-${version}.zip`,
     `Sitepull-darwin-x64-${version}.zip`,
-    `sitepull_${version}-1~ubuntu24.04_amd64.deb`,
-    `sitepull_${version}-1~debian12_amd64.deb`,
-    `sitepull_${version}-1~debian13_amd64.deb`,
+    `sitepull_${version}-1.ubuntu24.04_amd64.deb`,
+    `sitepull_${version}-1.debian12_amd64.deb`,
+    `sitepull_${version}-1.debian13_amd64.deb`,
     'SitepullSetup.exe',
     `sitepull-${version}-full.nupkg`,
     'Sitepull-windows-RELEASES',
     `Sitepull-win32-x64-${version}.zip`,
   ];
+}
+
+export function publishedReleaseAssetName(sourceName: string): string | undefined {
+  if (sourceName === 'RELEASES') return 'Sitepull-windows-RELEASES';
+  if (sourceName.endsWith('.deb')) {
+    // GitHub normalizes `~` to `.` in uploaded asset names. Make that
+    // transformation before hashing and attesting so the manifest names the
+    // files users actually download. The DEB's internal version keeps `~`.
+    return sourceName.replaceAll('~', '.');
+  }
+  if (
+    sourceName.endsWith('.dmg') ||
+    sourceName.endsWith('.zip') ||
+    sourceName.endsWith('Setup.exe') ||
+    sourceName.endsWith('.nupkg')
+  ) {
+    return sourceName;
+  }
+  return undefined;
 }
 
 export function assertExactNativeReleaseAssets(
@@ -46,6 +65,10 @@ export function assertExactNativeReleaseAssets(
 
 async function main(): Promise<void> {
   const [command, version, directory] = process.argv.slice(2);
+  if (command === 'published-name' && version !== undefined && directory === undefined) {
+    process.stdout.write(publishedReleaseAssetName(version) ?? '');
+    return;
+  }
   if (command === 'print' && version !== undefined && directory === undefined) {
     process.stdout.write(`${expectedNativeReleaseAssets(version).join('\n')}\n`);
     return;
@@ -57,7 +80,9 @@ async function main(): Promise<void> {
     console.log(`Verified ${files.length} exact native release assets.`);
     return;
   }
-  throw new Error('Usage: release-assets.ts print <version> | verify <version> <directory>');
+  throw new Error(
+    'Usage: release-assets.ts published-name <source-name> | print <version> | verify <version> <directory>',
+  );
 }
 
 const invokedPath = process.argv[1];

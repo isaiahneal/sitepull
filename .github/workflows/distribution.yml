@@ -357,19 +357,13 @@ jobs:
           mkdir -p release-assets
           while IFS= read -r -d '' source; do
             filename="$(basename "$source")"
-            case "$filename" in
-              *.dmg|*.zip|*.deb|*Setup.exe|*.nupkg)
-                destination="release-assets/$filename"
-                ;;
-              RELEASES)
-                destination="release-assets/Sitepull-windows-RELEASES"
-                ;;
-              *)
-                continue
-                ;;
-            esac
+            published_name="$(node scripts/release-assets.ts published-name "$filename")"
+            if [[ -z "$published_name" ]]; then
+              continue
+            fi
+            destination="release-assets/$published_name"
             if [[ -e "$destination" ]]; then
-              echo "Duplicate release asset: $filename" >&2
+              echo "Duplicate release asset: $published_name" >&2
               exit 1
             fi
             cp "$source" "$destination"
@@ -415,7 +409,7 @@ jobs:
         with:
           subject-path: release-assets/SHA256SUMS.txt
 
-      - name: Publish versioned release
+      - name: Upload draft release
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
@@ -424,5 +418,45 @@ jobs:
           notes_file="docs/release-notes/${GITHUB_REF_NAME}.md"
           gh release create "$GITHUB_REF_NAME" release-assets/* \
             --verify-tag \
+            --draft \
             --title "Sitepull $GITHUB_REF_NAME" \
             --notes-file "$notes_file"
+
+      - name: Verify uploaded release names and digests
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          package_version="$(node -p "JSON.parse(require('fs').readFileSync('package.json', 'utf8')).version")"
+          expected_names="${RUNNER_TEMP}/release-assets.expected"
+          actual_names="${RUNNER_TEMP}/release-assets.actual"
+          remote_assets="${RUNNER_TEMP}/release-assets.remote.tsv"
+
+          {
+            node scripts/release-assets.ts print "${package_version}"
+            printf '%s\n' SHA256SUMS.txt
+          } | LC_ALL=C sort > "${expected_names}"
+          gh release view "${GITHUB_REF_NAME}" --json assets \
+            --jq '.assets[].name' | LC_ALL=C sort > "${actual_names}"
+
+          if ! cmp --silent "${expected_names}" "${actual_names}"; then
+            echo "GitHub stored a different release asset set" >&2
+            diff -u "${expected_names}" "${actual_names}" || true
+            exit 1
+          fi
+
+          gh release view "${GITHUB_REF_NAME}" --json assets \
+            --jq '.assets[] | [.name, .digest] | @tsv' > "${remote_assets}"
+          while IFS=$'\t' read -r filename remote_digest; do
+            local_digest="sha256:$(sha256sum "release-assets/${filename}" | cut -d ' ' -f1)"
+            if [[ "${remote_digest}" != "${local_digest}" ]]; then
+              echo "GitHub digest mismatch for ${filename}: ${remote_digest}" >&2
+              exit 1
+            fi
+          done < "${remote_assets}"
+
+      - name: Publish verified release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release edit "${GITHUB_REF_NAME}" --draft=false --latest
