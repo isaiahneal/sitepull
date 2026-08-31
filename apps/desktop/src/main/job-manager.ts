@@ -1,10 +1,15 @@
 import type { WebContents } from 'electron';
 import {
+  CAPTURE_EVENT_REPLAY_LIMIT,
+  CaptureRecipeSchema,
   CaptureEventSchema,
+  CaptureJobSnapshotSchema,
   StartCaptureResultSchema,
   SITEPULL_IPC_CHANNELS,
   type CaptureCompleteEvent,
   type CaptureEvent,
+  type CaptureJobSnapshot,
+  type CaptureRecipe,
   type StartCapturePayload,
   type StartCaptureResult,
 } from '@sitepull/contracts';
@@ -24,8 +29,11 @@ interface Deferred<T> {
 interface CaptureJob {
   readonly controller: AbortController;
   readonly owner: WebContents;
+  readonly recipe: CaptureRecipe;
+  readonly events: CaptureEvent[];
   captureId: string | null;
   completeEvent: CaptureCompleteEvent | null;
+  detached: boolean;
 }
 
 function deferred<T>(): Deferred<T> {
@@ -52,6 +60,7 @@ export class CaptureJobManager {
   readonly #active = new Map<string, CaptureJob>();
   readonly #starting = new Set<CaptureJob>();
   readonly #settlements = new Set<Promise<void>>();
+  readonly #latestTerminalByOwner = new Map<number, CaptureJobSnapshot>();
 
   constructor(registry: CaptureRegistry, recents: RecentsStore) {
     this.#registry = registry;
@@ -60,6 +69,17 @@ export class CaptureJobManager {
 
   get hasActiveJobs(): boolean {
     return this.#active.size > 0 || this.#starting.size > 0;
+  }
+
+  snapshotForOwner(ownerId: number): CaptureJobSnapshot | null {
+    for (const job of this.#starting) {
+      if (job.owner.id === ownerId) return this.#snapshot(job);
+    }
+    for (const job of this.#active.values()) {
+      if (job.owner.id === ownerId) return this.#snapshot(job);
+    }
+    const terminal = this.#latestTerminalByOwner.get(ownerId);
+    return terminal === undefined ? null : CaptureJobSnapshotSchema.parse(terminal);
   }
 
   async start(
@@ -76,14 +96,30 @@ export class CaptureJobManager {
       });
     }
 
+    const recipe = CaptureRecipeSchema.parse({
+      url: payload.url,
+      allowHttpFallback: payload.allowHttpFallback ?? false,
+      outputDirectory,
+      config: payload.config ?? {},
+    });
+    this.#latestTerminalByOwner.delete(owner.id);
     const firstEvent = deferred<string>();
     const job: CaptureJob = {
       controller: new AbortController(),
       owner,
+      recipe,
+      events: [],
       captureId: null,
       completeEvent: null,
+      detached: false,
     };
     this.#starting.add(job);
+    try {
+      await this.#recents.rememberRecipe(recipe);
+    } catch (error) {
+      console.error('Could not persist the last-used Sitepull recipe:', error);
+    }
+
     let runPromise: Promise<CaptureRunResult>;
     try {
       const { runCapture } = await loadCore();
@@ -105,9 +141,15 @@ export class CaptureJobManager {
               this.#starting.delete(job);
               this.#active.set(parsedEvent.captureId, job);
               firstEvent.resolve(parsedEvent.captureId);
+            } else if (parsedEvent.captureId !== job.captureId) {
+              throw new DesktopError({
+                code: 'INTERNAL_ERROR',
+                message: 'The capture engine emitted a mismatched capture identifier.',
+                stage: 'validation',
+              });
             }
             if (parsedEvent.type === 'complete') job.completeEvent = parsedEvent;
-            else this.#send(job, parsedEvent);
+            else this.#publish(job, parsedEvent);
           },
         },
       );
@@ -123,7 +165,7 @@ export class CaptureJobManager {
       () => this.#settlements.delete(settlement),
     );
 
-    return StartCaptureResultSchema.parse({ captureId: await firstEvent.promise });
+    return StartCaptureResultSchema.parse({ captureId: await firstEvent.promise, recipe });
   }
 
   cancel(captureId: string, ownerId: number): boolean {
@@ -136,8 +178,12 @@ export class CaptureJobManager {
 
   abortForOwner(ownerId: number): void {
     for (const job of [...this.#active.values(), ...this.#starting]) {
-      if (job.owner.id === ownerId) job.controller.abort();
+      if (job.owner.id === ownerId) {
+        job.detached = true;
+        job.controller.abort();
+      }
     }
+    this.#latestTerminalByOwner.delete(ownerId);
   }
 
   abortAll(): void {
@@ -179,20 +225,31 @@ export class CaptureJobManager {
           byteSize,
           status: result.summary.status,
           availability: 'available',
+          recipe: job.recipe,
         });
       } catch (error) {
         console.error('Could not persist Sitepull recent capture:', error);
       }
-      if (job.completeEvent !== null) this.#send(job, job.completeEvent);
+      this.#publish(
+        job,
+        job.completeEvent ??
+          CaptureEventSchema.parse({
+            type: 'complete',
+            captureId: result.summary.captureId,
+            sequence: this.#nextSequence(job),
+            timestamp: new Date().toISOString(),
+            result: result.summary,
+          }),
+      );
     } catch (error) {
       firstEvent.reject(error);
-      if (job.captureId !== null && job.completeEvent !== null) {
-        this.#send(
+      if (job.captureId !== null && !this.#hasTerminalEvent(job)) {
+        this.#publish(
           job,
           CaptureEventSchema.parse({
             type: 'error',
             captureId: job.captureId,
-            sequence: job.completeEvent.sequence,
+            sequence: job.completeEvent?.sequence ?? this.#nextSequence(job),
             timestamp: new Date().toISOString(),
             error: toIpcFailure(error, 'The completed capture could not be registered.').error,
           }),
@@ -200,8 +257,52 @@ export class CaptureJobManager {
       }
     } finally {
       this.#starting.delete(job);
-      if (job.captureId !== null) this.#active.delete(job.captureId);
+      if (job.captureId !== null) {
+        const snapshot = this.#snapshot(job);
+        if (snapshot.state === 'terminal' && !job.detached && !job.owner.isDestroyed()) {
+          this.#latestTerminalByOwner.set(job.owner.id, snapshot);
+        }
+        this.#active.delete(job.captureId);
+      }
     }
+  }
+
+  #snapshot(job: CaptureJob): CaptureJobSnapshot {
+    if (job.captureId === null) {
+      return CaptureJobSnapshotSchema.parse({
+        state: 'starting',
+        captureId: null,
+        recipe: job.recipe,
+        events: [],
+      });
+    }
+    return CaptureJobSnapshotSchema.parse({
+      state: this.#hasTerminalEvent(job) ? 'terminal' : 'active',
+      captureId: job.captureId,
+      recipe: job.recipe,
+      events: job.events,
+    });
+  }
+
+  #publish(job: CaptureJob, event: CaptureEvent): void {
+    const lastEvent = job.events.at(-1);
+    if (lastEvent?.type === 'complete' || lastEvent?.type === 'error') return;
+    if (lastEvent !== undefined && event.sequence <= lastEvent.sequence) return;
+
+    job.events.push(CaptureEventSchema.parse(event));
+    if (job.events.length > CAPTURE_EVENT_REPLAY_LIMIT) {
+      job.events.splice(0, job.events.length - CAPTURE_EVENT_REPLAY_LIMIT);
+    }
+    this.#send(job, event);
+  }
+
+  #hasTerminalEvent(job: CaptureJob): boolean {
+    const event = job.events.at(-1);
+    return event?.type === 'complete' || event?.type === 'error';
+  }
+
+  #nextSequence(job: CaptureJob): number {
+    return (job.events.at(-1)?.sequence ?? -1) + 1;
   }
 
   #send(job: CaptureJob, event: CaptureEvent): void {

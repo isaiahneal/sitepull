@@ -1,3 +1,5 @@
+import { rm } from 'node:fs/promises';
+
 import {
   AssetManifestSchema,
   CaptureEventSchema,
@@ -7,6 +9,7 @@ import {
   LinksManifestSchema,
   NetworkManifestSchema,
   PageManifestSchema,
+  SITEPULL_VERSION,
   SitepullMetadataSchema,
   type CaptureEvent,
   type CaptureManifest,
@@ -19,17 +22,29 @@ import {
   type ResourceKind as ContractResourceKind,
   type SkippedUrl,
 } from '@sitepull/contracts';
-import type { APIResponse, Browser, BrowserContext, BrowserType } from 'playwright';
+import type { Browser, BrowserContext, BrowserType } from 'playwright';
 
 import { generateAiContext, generatedCaptureReadme } from './ai-context.js';
 import { analyzeSiteDesign, designSystemMarkdown, type AnalyzablePage } from './analyze.js';
 import { mapWithConcurrency, throwIfAborted } from './async.js';
+import {
+  installUntrustedPageNetworkGuards,
+  untrustedBrowserLaunchOptions,
+} from './browser-network-policy.js';
 import { capturePage, type CapturedResourcePayload } from './capture-page.js';
 import { asSitepullError, SitepullError } from './errors.js';
 import { selectExportFiles } from './export.js';
 import { createJsonLinesLogger, type SitepullLogger } from './logger.js';
-import { assertNetworkUrlAllowed } from './network-policy.js';
+import { createNetworkPolicyProxy, type NetworkPolicyProxy } from './network-proxy.js';
+import {
+  assertNetworkUrlAllowed,
+  cancelResponseBody,
+  fetchValidatedResource,
+  readBoundedResponseBody,
+} from './network-policy.js';
+import { captureWithPageRetries } from './page-retry.js';
 import { ProjectWriter } from './project.js';
+import { ResourceCaptureBudget } from './resource-budget.js';
 import { ResourceStore } from './resource-store.js';
 import { classifyResource, type ResourceKind } from './resources.js';
 import {
@@ -122,7 +137,7 @@ async function launchBrowser(
   headed: boolean,
 ): Promise<Browser> {
   try {
-    return await (await browserType(engine)).launch({ headless: !headed });
+    return await (await browserType(engine)).launch(untrustedBrowserLaunchOptions(engine, headed));
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (/executable.*doesn.*exist|browser.*not.*installed|playwright install/iu.test(message)) {
@@ -144,49 +159,15 @@ async function launchBrowser(
   }
 }
 
-async function responsePayload(
-  response: APIResponse,
-  originalUrl: string,
-  referencedByPage: string,
-): Promise<CapturedResourcePayload> {
-  const headers = response.headers();
-  const contentType = headers['content-type']?.split(';')[0]?.trim() ?? null;
-  const declared = Number.parseInt(headers['content-length'] ?? '', 10);
-  if (Number.isFinite(declared) && declared > 25 * 1024 * 1024) {
-    return {
-      originalUrl,
-      finalUrl: response.url(),
-      status: response.status(),
-      contentType,
-      headers,
-      body: null,
-      referencedByPage,
-      failureReason: 'Referenced source map exceeds the 25 MB resource limit.',
-    };
-  }
-  const body = await response.body();
-  return {
-    originalUrl,
-    finalUrl: response.url(),
-    status: response.status(),
-    contentType,
-    headers,
-    body: body.byteLength <= 25 * 1024 * 1024 ? body : null,
-    referencedByPage,
-    ...(body.byteLength <= 25 * 1024 * 1024
-      ? {}
-      : { failureReason: 'Referenced source map exceeds the 25 MB resource limit.' }),
-  };
-}
-
 async function createContexts(options: {
   browser: Browser;
   count: number;
   sourceUrl: string;
   sameOriginOnly: boolean;
   includeSubdomains: boolean;
-  allowPrivateHosts: boolean;
   pageTimeoutMs: number;
+  proxyServer: string;
+  engine: 'webkit' | 'chromium' | 'firefox';
 }): Promise<BrowserContext[]> {
   return Promise.all(
     Array.from({ length: options.count }, async () => {
@@ -194,12 +175,13 @@ async function createContexts(options: {
         acceptDownloads: false,
         ignoreHTTPSErrors: false,
         serviceWorkers: 'block',
+        proxy: { server: options.proxyServer },
       });
+      await installUntrustedPageNetworkGuards(context, options.engine);
       context.setDefaultTimeout(options.pageTimeoutMs);
       await context.route('**/*', async (route) => {
         const request = route.request();
         try {
-          await assertNetworkUrlAllowed(request.url(), options.allowPrivateHosts);
           if (
             options.sameOriginOnly &&
             request.isNavigationRequest() &&
@@ -236,6 +218,8 @@ async function resolveInferredStartUrl(options: {
   includeSubdomains: boolean;
   allowPrivateHosts: boolean;
   pageTimeoutMs: number;
+  proxyServer: string;
+  engine: 'webkit' | 'chromium' | 'firefox';
   signal?: AbortSignal;
   onFallback: (error: unknown, httpUrl: string) => Promise<void>;
 }): Promise<string> {
@@ -255,8 +239,9 @@ async function resolveInferredStartUrl(options: {
       sourceUrl: candidate,
       sameOriginOnly: false,
       includeSubdomains: options.includeSubdomains,
-      allowPrivateHosts: options.allowPrivateHosts,
       pageTimeoutMs: options.pageTimeoutMs,
+      proxyServer: options.proxyServer,
+      engine: options.engine,
     });
     if (context === undefined) {
       throw new SitepullError({
@@ -294,6 +279,7 @@ export async function runCapture(
   let writer: ProjectWriter | undefined;
   let logger: SitepullLogger | undefined;
   let browser: Browser | undefined;
+  let networkProxy: NetworkPolicyProxy | undefined;
   let contexts: BrowserContext[] = [];
   let completedPages = 0;
   let elementCount = 0;
@@ -367,6 +353,11 @@ export async function runCapture(
     throwIfAborted(options.signal);
     let normalizedUrl = canonicalizeUrl(input.url);
     const config = CrawlConfigSchema.parse(input.config ?? {});
+    const resourceBudget = new ResourceCaptureBudget({
+      maxResourceBytes: config.maxResourceBytes,
+      maxCaptureBytes: config.maxCaptureResourceBytes,
+      bodyConcurrency: config.resourceBodyConcurrency,
+    });
     const allowPrivateHosts = options.allowPrivateHosts ?? false;
     await assertNetworkUrlAllowed(normalizedUrl, allowPrivateHosts);
     writer = await ProjectWriter.create(input.outputDirectory, normalizedUrl, startedAt);
@@ -381,10 +372,17 @@ export async function runCapture(
     await log('info', 'Capture started.', 'normalizing-url', {
       url: normalizedUrl,
       engine: config.engine,
+      maxResourceBytes: config.maxResourceBytes,
+      maxCaptureResourceBytes: config.maxCaptureResourceBytes,
+      resourceBodyConcurrency: config.resourceBodyConcurrency,
     });
 
     emitProgress('launching-browser', 'started', `Launching ${config.engine}.`, normalizedUrl);
     browser = await launchBrowser(config.engine, config.headed);
+    networkProxy = await createNetworkPolicyProxy({
+      allowPrivateHosts,
+      connectTimeoutMs: config.pageTimeoutMs,
+    });
     if (input.allowHttpFallback === true && new URL(normalizedUrl).protocol === 'https:') {
       normalizedUrl = await resolveInferredStartUrl({
         browser,
@@ -392,6 +390,8 @@ export async function runCapture(
         includeSubdomains: config.includeSubdomains,
         allowPrivateHosts,
         pageTimeoutMs: config.pageTimeoutMs,
+        proxyServer: networkProxy.serverUrl,
+        engine: config.engine,
         ...(options.signal === undefined ? {} : { signal: options.signal }),
         onFallback: async (error, httpUrl) => {
           emitProgress(
@@ -419,8 +419,9 @@ export async function runCapture(
       sourceUrl: normalizedUrl,
       sameOriginOnly: config.sameOriginOnly,
       includeSubdomains: config.includeSubdomains,
-      allowPrivateHosts,
       pageTimeoutMs: config.pageTimeoutMs,
+      proxyServer: networkProxy.serverUrl,
+      engine: config.engine,
     });
     emitProgress('launching-browser', 'completed', `${config.engine} launched.`, normalizedUrl);
 
@@ -433,6 +434,7 @@ export async function runCapture(
     const analyzablePages: AnalyzablePage[] = [];
     const explicitSourceMaps = new Set<string>();
     let crawlStarted = false;
+    let lastPageFailure: SitepullError | undefined;
 
     const considerLink = (
       href: string,
@@ -475,22 +477,94 @@ export async function runCapture(
       const sourceMapUrl = stored?.sourceMapUrl ?? null;
       if (sourceMapUrl === null || explicitSourceMaps.has(sourceMapUrl)) return;
       explicitSourceMaps.add(sourceMapUrl);
+      let response: Response | undefined;
+      let finalUrl: string | undefined;
+      let responseHeaders: Readonly<Record<string, string>> | undefined;
+      let responseStatus: number | undefined;
+      let contentType: string | null = null;
       try {
-        await assertNetworkUrlAllowed(sourceMapUrl, allowPrivateHosts);
-        const response = await context.request.get(sourceMapUrl, { timeout: config.pageTimeoutMs });
-        await resourceStore?.record(
-          await responsePayload(response, sourceMapUrl, payload.referencedByPage),
-        );
+        const bodyResult = await resourceBudget.read({
+          declaredBytes: null,
+          ...(options.signal === undefined ? {} : { signal: options.signal }),
+          read: async (maxBytes) => {
+            const opened = await fetchValidatedResource(sourceMapUrl, {
+              allowPrivateHosts,
+              timeoutMs: config.pageTimeoutMs,
+              ...(options.signal === undefined ? {} : { signal: options.signal }),
+              headersForUrl: async (url) => {
+                const cookies = await context.cookies(url);
+                const cookie = cookies.map(({ name, value }) => `${name}=${value}`).join('; ');
+                return cookie === '' ? {} : { cookie };
+              },
+            });
+            response = opened.response;
+            finalUrl = opened.finalUrl;
+            responseHeaders = Object.fromEntries(response.headers.entries());
+            responseStatus = response.status;
+            contentType = response.headers.get('content-type')?.split(';')[0]?.trim() ?? null;
+            const declared = Number.parseInt(response.headers.get('content-length') ?? '', 10);
+            if (Number.isSafeInteger(declared) && declared > maxBytes) {
+              throw new SitepullError({
+                code: 'RESOURCE_TOO_LARGE',
+                message: `Source map response exceeds the ${maxBytes}-byte materialization limit.`,
+                stage: 'capturing-assets',
+                details: { url: finalUrl, declaredBytes: declared, maxBytes },
+              });
+            }
+            return readBoundedResponseBody(response, maxBytes, options.signal);
+          },
+        });
+        if (
+          finalUrl === undefined ||
+          responseHeaders === undefined ||
+          responseStatus === undefined
+        ) {
+          throw new SitepullError({
+            code: 'RESOURCE_TOO_LARGE',
+            message: bodyResult.failureReason ?? 'The source map resource budget is exhausted.',
+            stage: 'capturing-assets',
+            details: { url: sourceMapUrl },
+          });
+        }
+        await resourceStore?.record({
+          originalUrl: sourceMapUrl,
+          finalUrl,
+          status: responseStatus,
+          contentType,
+          headers: responseHeaders,
+          body: bodyResult.body,
+          referencedByPage: payload.referencedByPage,
+          ...(bodyResult.failureReason === undefined
+            ? {}
+            : { failureReason: bodyResult.failureReason }),
+        });
       } catch (error) {
+        if (error instanceof SitepullError && error.code === 'CAPTURE_CANCELLED') throw error;
+        const failureReason = (error instanceof Error ? error.message : String(error)).slice(
+          0,
+          10_000,
+        );
+        await resourceStore?.record({
+          originalUrl: sourceMapUrl,
+          finalUrl: finalUrl ?? sourceMapUrl,
+          status: responseStatus ?? 0,
+          contentType,
+          headers: responseHeaders ?? {},
+          body: null,
+          referencedByPage: payload.referencedByPage,
+          failureReason: failureReason === '' ? 'The source map was unavailable.' : failureReason,
+        });
         await log(
           'warn',
           'An explicitly referenced source map could not be captured.',
           'capturing-assets',
           {
             sourceMapUrl,
-            error: error instanceof Error ? error.message : String(error),
+            error: failureReason,
           },
         );
+      } finally {
+        if (response !== undefined) await cancelResponseBody(response);
       }
     };
 
@@ -504,44 +578,80 @@ export async function runCapture(
         async (entry, index) => {
           const context = contexts[index];
           if (context === undefined) {
-            return {
-              queue: entry,
-              ok: false as const,
-              error: new SitepullError({
-                code: 'INTERNAL_ERROR',
-                message: 'Browser context pool was unavailable.',
-              }),
-            };
+            throw new SitepullError({
+              code: 'INTERNAL_ERROR',
+              message: 'Browser context pool was unavailable.',
+            });
           }
           const id = routeSlug(entry.url);
           const screenshotsRelative = `pages/${id}/screenshots`;
-          try {
-            await writer?.ensureDirectory(screenshotsRelative);
-            const data = await capturePage({
-              context,
-              url: entry.url,
-              route: routePath(entry.url),
-              viewports: config.viewports,
-              pageTimeoutMs: config.pageTimeoutMs,
-              maxElements: config.maxElementsPerPage,
-              screenshotsDirectory: writer?.resolve(screenshotsRelative) ?? '',
-              screenshotRelativeDirectory: screenshotsRelative,
-              ...(options.signal === undefined ? {} : { signal: options.signal }),
-              onResource: async (payload) => recordResource(payload, context),
+          const activeWriter = writer;
+          if (activeWriter === undefined) {
+            throw new SitepullError({
+              code: 'INTERNAL_ERROR',
+              message: 'Capture project writer was unavailable.',
             });
-            return { queue: entry, ok: true as const, data };
-          } catch (error) {
-            return {
-              queue: entry,
-              ok: false as const,
-              error: asSitepullError(error, {
-                code: 'CRAWL_FAILED',
-                stage: 'crawling-pages',
-                retryable: true,
-                message: `Could not capture ${entry.url}.`,
-              }),
-            };
           }
+          const screenshotsDirectory = await activeWriter.ensureDirectory(screenshotsRelative);
+          const result = await captureWithPageRetries(
+            async (attempt) => {
+              const attemptBudget = resourceBudget.createScope();
+              try {
+                if (attempt > 1) {
+                  await rm(screenshotsDirectory, { recursive: true, force: true });
+                  await activeWriter.ensureDirectory(screenshotsRelative);
+                }
+                const captured = await capturePage({
+                  context,
+                  url: entry.url,
+                  route: routePath(entry.url),
+                  viewports: config.viewports,
+                  pageTimeoutMs: config.pageTimeoutMs,
+                  maxElements: config.maxElementsPerPage,
+                  screenshotsDirectory,
+                  screenshotRelativeDirectory: screenshotsRelative,
+                  resourceBudget: attemptBudget,
+                  ...(options.signal === undefined ? {} : { signal: options.signal }),
+                });
+                attemptBudget.commit();
+                return captured;
+              } catch (error) {
+                attemptBudget.rollback();
+                throw error;
+              }
+            },
+            {
+              ...(options.signal === undefined ? {} : { signal: options.signal }),
+              getHttpStatus: (data) => data.status,
+              onRetry: async (attempt) => {
+                const delay = attempt.retryDelayMs ?? 0;
+                const retryStage = crawlStarted ? 'crawling-pages' : 'rendering';
+                emitProgress(
+                  retryStage,
+                  'progress',
+                  `Retrying ${entry.url} after attempt ${attempt.attempt} in ${delay} ms.`,
+                  entry.url,
+                );
+                await log('warn', 'Page capture attempt will be retried.', retryStage, {
+                  url: entry.url,
+                  attempt: attempt.attempt,
+                  httpStatus: attempt.httpStatus,
+                  retryDelayMs: delay,
+                  error: attempt.error ?? null,
+                });
+              },
+            },
+          );
+          if (result.ok) {
+            await Promise.all(
+              result.value.resources.map(async (payload) => recordResource(payload, context)),
+            );
+          } else {
+            await rm(screenshotsDirectory, { recursive: true, force: true });
+          }
+          return result.ok
+            ? { queue: entry, ok: true as const, data: result.value, attempts: result.attempts }
+            : { queue: entry, ok: false as const, error: result.error, attempts: result.attempts };
         },
       );
 
@@ -551,7 +661,13 @@ export async function runCapture(
         const pageRoute = routePath(captured.queue.url);
         if (!captured.ok) {
           if (captured.error.code === 'CAPTURE_CANCELLED') throw captured.error;
-          await log('error', captured.error.message, 'crawling-pages', { url: captured.queue.url });
+          lastPageFailure = captured.error;
+          await log('error', captured.error.message, 'crawling-pages', {
+            url: captured.queue.url,
+            attempts: captured.attempts.length,
+            httpStatus: captured.attempts.at(-1)?.httpStatus ?? null,
+            attemptEvidence: captured.attempts,
+          });
           pageManifests.push(
             PageManifestSchema.parse({
               id,
@@ -560,7 +676,7 @@ export async function runCapture(
               canonicalUrl: captured.queue.url,
               title: '',
               contentType: null,
-              httpStatus: null,
+              httpStatus: captured.attempts.at(-1)?.httpStatus ?? null,
               depth: captured.queue.depth,
               status: 'failed',
               capturedAt: new Date().toISOString(),
@@ -568,12 +684,18 @@ export async function runCapture(
               screenshots: [],
               metrics: {
                 visibleElements: 0,
+                elementsTruncated: false,
+                inaccessibleStylesheets: 0,
                 discoveredLinks: 0,
                 networkRequests: 0,
                 capturedResources: 0,
                 byteSize: 0,
-                durationMs: 0,
+                durationMs: captured.attempts.reduce(
+                  (total, attempt) => total + attempt.durationMs + (attempt.retryDelayMs ?? 0),
+                  0,
+                ),
               },
+              attempts: captured.attempts,
               errors: [serializeError(captured.error)],
             }),
           );
@@ -770,12 +892,19 @@ export async function runCapture(
           screenshots: captured.data.screenshots,
           metrics: {
             visibleElements: captured.data.elements.length,
+            elementsTruncated: captured.data.elementsTruncated,
+            inaccessibleStylesheets: captured.data.inaccessibleStylesheets,
             discoveredLinks: linkRecords.length,
             networkRequests: networkEntries.length,
-            capturedResources: resourceStore.capturedCount,
+            capturedResources: captured.data.resources.filter((payload) => payload.body !== null)
+              .length,
             byteSize: screenshotBytes + Buffer.byteLength(captured.data.renderedHtml),
-            durationMs: captured.data.durationMs,
+            durationMs: captured.attempts.reduce(
+              (total, attempt) => total + attempt.durationMs + (attempt.retryDelayMs ?? 0),
+              0,
+            ),
           },
+          attempts: captured.attempts,
           errors: [],
         });
         pageManifests.push(pageManifest);
@@ -798,12 +927,15 @@ export async function runCapture(
     }
 
     if (analyzablePages.length === 0) {
-      throw new SitepullError({
-        code: 'CRAWL_FAILED',
-        message: 'No HTML page could be captured successfully.',
-        stage: 'crawling-pages',
-        retryable: true,
-      });
+      throw (
+        lastPageFailure ??
+        new SitepullError({
+          code: 'CRAWL_FAILED',
+          message: 'No HTML page could be captured successfully.',
+          stage: 'crawling-pages',
+          retryable: true,
+        })
+      );
     }
     emitProgress(
       'discovering-routes',
@@ -877,7 +1009,7 @@ export async function runCapture(
     };
     const metadata = SitepullMetadataSchema.parse({
       schemaVersion: 1,
-      generator: { name: 'Sitepull', version: '0.1.0' },
+      generator: { name: 'Sitepull', version: SITEPULL_VERSION },
       captureId: writer.captureId,
       source,
       capturedAt: completedAt.toISOString(),
@@ -944,7 +1076,7 @@ export async function runCapture(
     };
     let manifest = CaptureManifestSchema.parse({
       schemaVersion: 1,
-      generatorVersion: '0.1.0',
+      generatorVersion: SITEPULL_VERSION,
       captureId: writer.captureId,
       status: 'completed',
       source,
@@ -993,6 +1125,8 @@ export async function runCapture(
     contexts = [];
     await browser.close();
     browser = undefined;
+    await networkProxy.close();
+    networkProxy = undefined;
     const outputDirectory = await writer.finalize();
     emitProgress('packaging', 'completed', 'Capture project finalized.');
     emit({
@@ -1022,6 +1156,7 @@ export async function runCapture(
     }
     await Promise.all(contexts.map((context) => context.close().catch(() => undefined)));
     await browser?.close().catch(() => undefined);
+    await networkProxy?.close().catch(() => undefined);
     await logger?.close().catch(() => undefined);
     if (writer !== undefined) {
       if (structured.code === 'CAPTURE_CANCELLED')

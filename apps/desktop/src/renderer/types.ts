@@ -1,6 +1,7 @@
 import type {
   CaptureEvent,
   CaptureManifest,
+  CaptureRecipe,
   CrawlConfig,
   LogEvent,
   ProgressEvent,
@@ -23,6 +24,9 @@ export interface AppModel {
   recents: RecentCapture[];
   recentsLoading: boolean;
   recentsError: string | null;
+  lastUsedRecipe: CaptureRecipe | null;
+  draftRecipe: CaptureRecipe | null;
+  viewRecipe: CaptureRecipe | null;
   session: CaptureSession | null;
   manifest: CaptureManifest | null;
   error: SerializedSitepullError | null;

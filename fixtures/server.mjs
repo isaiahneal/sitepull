@@ -10,6 +10,9 @@ export const DEFAULT_FIXTURE_PORT = 4173;
 const fixtureDirectory = dirname(fileURLToPath(import.meta.url));
 const siteDirectory = join(fixtureDirectory, 'site');
 const fileCache = new Map();
+const retryAttempts = new Map();
+const aggregateBudgetAssetBytes = 256;
+const clientErrorStatuses = new Set([400, 401, 403, 404, 405, 410, 451]);
 
 const rasterBytes = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
@@ -39,6 +42,23 @@ startxref
 110
 %%EOF
 `);
+
+function fixedLengthCss(label, bytes) {
+  const prefix = Buffer.from(`/* ${label} */\n:root { --${label}: 1; }\n`, 'utf8');
+  if (prefix.byteLength > bytes) throw new RangeError('Fixture CSS prefix exceeds its body size.');
+  return Buffer.concat([prefix, Buffer.alloc(bytes - prefix.byteLength, 0x20)]);
+}
+
+const aggregateBudgetCss = new Map([
+  ['/resource-budget/aggregate-a.css', fixedLengthCss('aggregate-a', aggregateBudgetAssetBytes)],
+  ['/resource-budget/aggregate-b.css', fixedLengthCss('aggregate-b', aggregateBudgetAssetBytes)],
+]);
+const unknownLengthCss = fixedLengthCss('unknown-length', 2_048);
+const unknownLengthSourceMap = Buffer.concat([
+  Buffer.from('{"version":3,"sources":[],"mappings":"', 'utf8'),
+  Buffer.alloc(2_009, 0x41),
+  Buffer.from('"}', 'utf8'),
+]);
 
 const spaRoutes = new Set(['/', '/about', '/contact', '/search', '/work', '/work/case-study']);
 
@@ -96,14 +116,22 @@ function bodyBuffer(body) {
   return Buffer.from(typeof body === 'string' ? body : JSON.stringify(body, null, 2));
 }
 
-function send(request, response, statusCode, body, contentType, extraHeaders = {}) {
+function send(
+  request,
+  response,
+  statusCode,
+  body,
+  contentType,
+  extraHeaders = {},
+  includeContentLength = true,
+) {
   const bytes = bodyBuffer(body);
   const digest = createHash('sha256').update(bytes).digest('hex');
 
   response.sendDate = false;
   response.statusCode = statusCode;
   response.setHeader('Cache-Control', 'no-store');
-  response.setHeader('Content-Length', String(bytes.byteLength));
+  if (includeContentLength) response.setHeader('Content-Length', String(bytes.byteLength));
   response.setHeader(
     'Content-Security-Policy',
     "default-src 'self'; connect-src 'self'; font-src 'self'; img-src 'self' data:; script-src 'self'; style-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
@@ -137,6 +165,21 @@ function notFoundPage() {
 </html>`;
 }
 
+function retryPage(title, body) {
+  return `<!doctype html>
+<html lang="en">
+  <head><meta charset="utf-8"><title>${title} · Sitepull retry fixture</title></head>
+  <body><main><h1>${title}</h1>${body}</main></body>
+</html>`;
+}
+
+function nextRetryAttempt(url) {
+  const key = `${url.pathname}?case=${url.searchParams.get('case') ?? 'default'}`;
+  const attempt = (retryAttempts.get(key) ?? 0) + 1;
+  retryAttempts.set(key, attempt);
+  return attempt;
+}
+
 async function handleRequest(request, response) {
   if (request.method !== 'GET' && request.method !== 'HEAD') {
     send(request, response, 405, 'Method not allowed\n', 'text/plain; charset=utf-8', {
@@ -168,6 +211,174 @@ async function handleRequest(request, response) {
       shadows: ['card', 'float'],
       spacingSteps: 8,
     });
+    return;
+  }
+
+  if (url.pathname === '/retry-suite') {
+    const testCase = encodeURIComponent(url.searchParams.get('case') ?? 'default');
+    send(
+      request,
+      response,
+      200,
+      retryPage(
+        'Retry suite',
+        `<ul>
+          <li><a href="/retry/fail-once?case=${testCase}">Fail once</a></li>
+          <li><a href="/retry/rate-limited?case=${testCase}">Rate limited once</a></li>
+          <li><a href="/retry/permanent?case=${testCase}">Permanent failure</a></li>
+        </ul>`,
+      ),
+      'text/html; charset=utf-8',
+    );
+    return;
+  }
+
+  if (url.pathname === '/retry/fail-once') {
+    const attempt = nextRetryAttempt(url);
+    send(
+      request,
+      response,
+      attempt === 1 ? 503 : 200,
+      retryPage(
+        attempt === 1 ? 'Temporary failure' : 'Recovered after one retry',
+        `<p data-attempt="${attempt}">Fail-once attempt ${attempt}.</p>`,
+      ),
+      'text/html; charset=utf-8',
+    );
+    return;
+  }
+
+  if (url.pathname === '/retry/rate-limited') {
+    const attempt = nextRetryAttempt(url);
+    send(
+      request,
+      response,
+      attempt === 1 ? 429 : 200,
+      retryPage(
+        attempt === 1 ? 'Rate limited' : 'Recovered after Retry-After',
+        `<p data-attempt="${attempt}">Rate-limit attempt ${attempt}.</p>`,
+      ),
+      'text/html; charset=utf-8',
+      attempt === 1 ? { 'Retry-After': '1' } : {},
+    );
+    return;
+  }
+
+  if (url.pathname === '/retry/permanent') {
+    const attempt = nextRetryAttempt(url);
+    send(
+      request,
+      response,
+      503,
+      retryPage(
+        'Permanent fixture failure',
+        `<p data-attempt="${attempt}">Permanent attempt ${attempt}.</p>`,
+      ),
+      'text/html; charset=utf-8',
+    );
+    return;
+  }
+
+  if (url.pathname === '/client-error-suite') {
+    send(
+      request,
+      response,
+      200,
+      retryPage(
+        'Client error suite',
+        `<ul>${[...clientErrorStatuses]
+          .map((status) => `<li><a href="/client-errors/${status}">HTTP ${status}</a></li>`)
+          .join('')}</ul><div>${Array.from(
+          { length: 110 },
+          (_, index) => `<span>Evidence ${index + 1}</span>`,
+        ).join('')}</div>`,
+      ),
+      'text/html; charset=utf-8',
+    );
+    return;
+  }
+
+  const clientErrorMatch = /^\/client-errors\/(\d{3})$/u.exec(url.pathname);
+  const clientErrorStatus = Number.parseInt(clientErrorMatch?.[1] ?? '', 10);
+  if (clientErrorStatuses.has(clientErrorStatus)) {
+    send(
+      request,
+      response,
+      clientErrorStatus,
+      retryPage(
+        `Intentional HTTP ${clientErrorStatus}`,
+        `<p>This response must remain failure evidence, not design evidence.</p>`,
+      ),
+      'text/html; charset=utf-8',
+    );
+    return;
+  }
+
+  if (url.pathname === '/resource-budget/unknown') {
+    send(
+      request,
+      response,
+      200,
+      '<!doctype html><html><head><title>Unknown length budget</title><link rel="stylesheet" href="/resource-budget/unknown.css"><script src="/resource-budget/source-map.js"></script></head><body><h1>Unknown length budget</h1></body></html>',
+      'text/html; charset=utf-8',
+    );
+    return;
+  }
+
+  if (url.pathname === '/resource-budget/aggregate') {
+    send(
+      request,
+      response,
+      200,
+      '<!doctype html><html><head><title>Aggregate budget</title><link rel="stylesheet" href="/resource-budget/aggregate-a.css"><link rel="stylesheet" href="/resource-budget/aggregate-b.css"></head><body><h1>Aggregate budget</h1></body></html>',
+      'text/html; charset=utf-8',
+    );
+    return;
+  }
+
+  if (url.pathname === '/resource-budget/source-map-exhausted') {
+    send(
+      request,
+      response,
+      200,
+      '<!doctype html><html><head><title>Exhausted source map budget</title><script src="/resource-budget/source-map.js"></script></head><body><h1>Exhausted source map budget</h1></body></html>',
+      'text/html; charset=utf-8',
+    );
+    return;
+  }
+
+  if (url.pathname === '/resource-budget/unknown.css') {
+    send(request, response, 200, unknownLengthCss, 'text/css; charset=utf-8', {}, false);
+    return;
+  }
+
+  if (url.pathname === '/resource-budget/source-map.js') {
+    send(
+      request,
+      response,
+      200,
+      'globalThis.sitepullSourceMapFixture = true;\n//# sourceMappingURL=/resource-budget/unknown.js.map\n',
+      'text/javascript; charset=utf-8',
+    );
+    return;
+  }
+
+  if (url.pathname === '/resource-budget/unknown.js.map') {
+    send(
+      request,
+      response,
+      200,
+      unknownLengthSourceMap,
+      'application/json; charset=utf-8',
+      {},
+      false,
+    );
+    return;
+  }
+
+  const aggregateBudgetBody = aggregateBudgetCss.get(url.pathname);
+  if (aggregateBudgetBody !== undefined) {
+    send(request, response, 200, aggregateBudgetBody, 'text/css; charset=utf-8');
     return;
   }
 

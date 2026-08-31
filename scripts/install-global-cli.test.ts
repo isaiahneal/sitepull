@@ -1,4 +1,13 @@
-import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readlink,
+  rm,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -6,6 +15,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import {
   defaultCliBinDirectory,
+  defaultCliDataDirectory,
   installGlobalCli,
   windowsCliLauncher,
 } from './install-global-cli.js';
@@ -38,6 +48,18 @@ describe('global CLI installer', () => {
     );
   });
 
+  it('chooses durable per-user CLI data directories', () => {
+    expect(defaultCliDataDirectory('darwin', '/Users/test', undefined, undefined)).toBe(
+      path.join('/Users/test', 'Library', 'Application Support', 'Sitepull', 'cli'),
+    );
+    expect(defaultCliDataDirectory('linux', '/home/test', undefined, '/data')).toBe(
+      path.join('/data', 'sitepull', 'cli'),
+    );
+    expect(defaultCliDataDirectory('win32', 'C:\\Users\\test', 'D:\\Local', undefined)).toBe(
+      path.win32.join('D:\\Local', 'Sitepull', 'cli'),
+    );
+  });
+
   it('installs an idempotent POSIX symlink and recognizes PATH', async () => {
     const { source, bin } = await fixture();
     const first = await installGlobalCli({
@@ -67,6 +89,25 @@ describe('global CLI installer', () => {
     ).rejects.toThrow(/Refusing to replace/u);
   });
 
+  it('updates a POSIX link only when its previous target is installer-managed', async () => {
+    const { root, source, bin } = await fixture();
+    const nextSource = path.join(root, 'versions', '0.2.0', 'bin.js');
+    await mkdir(path.dirname(nextSource), { recursive: true });
+    await writeFile(nextSource, '#!/usr/bin/env node\n');
+    await chmod(nextSource, 0o755);
+    await mkdir(bin);
+    await symlink(source, path.join(bin, 'sitepull'));
+
+    await installGlobalCli({
+      platform: 'darwin',
+      source: nextSource,
+      binDirectory: bin,
+      managedSourceRoots: [root],
+    });
+
+    expect(path.resolve(bin, await readlink(path.join(bin, 'sitepull')))).toBe(nextSource);
+  });
+
   it('installs an idempotent Windows command shim without requiring symlink privileges', async () => {
     const { source, bin } = await fixture();
     const first = await installGlobalCli({ platform: 'win32', source, binDirectory: bin });
@@ -91,6 +132,27 @@ describe('global CLI installer', () => {
     await expect(
       installGlobalCli({ platform: 'win32', source, binDirectory: bin }),
     ).rejects.toThrow(/Refusing to replace/u);
+  });
+
+  it('updates a legacy Windows launcher only when its source is installer-managed', async () => {
+    const { root, source, bin } = await fixture();
+    const nextSource = path.join(root, 'versions', '0.2.0', 'bin.js');
+    await mkdir(path.dirname(nextSource), { recursive: true });
+    await writeFile(nextSource, '#!/usr/bin/env node\n');
+    await chmod(nextSource, 0o755);
+    await mkdir(bin);
+    await writeFile(path.join(bin, 'sitepull.cmd'), `@ECHO OFF\r\nnode "${source}" %*\r\n`);
+
+    await installGlobalCli({
+      platform: 'win32',
+      source: nextSource,
+      binDirectory: bin,
+      managedSourceRoots: [root],
+    });
+
+    expect(await readFile(path.join(bin, 'sitepull.cmd'), 'utf8')).toBe(
+      windowsCliLauncher(nextSource),
+    );
   });
 
   it('refuses to replace a Windows symlink', async () => {

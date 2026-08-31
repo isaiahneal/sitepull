@@ -10,3 +10,4 @@ export * from './primitives.js';
 export * from './recents.js';
 export * from './resources.js';
 export * from './results.js';
+export * from './version.js';

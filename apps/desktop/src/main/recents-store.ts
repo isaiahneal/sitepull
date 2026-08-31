@@ -3,8 +3,10 @@ import { lstat, mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/pro
 import path from 'node:path';
 
 import {
+  CaptureRecipeSchema,
   RecentCaptureSchema,
   RecentsIndexSchema,
+  type CaptureRecipe,
   type RecentCapture,
   type RecentsIndex,
 } from '@sitepull/contracts';
@@ -16,6 +18,7 @@ function emptyIndex(): RecentsIndex {
   return RecentsIndexSchema.parse({
     schemaVersion: 1,
     updatedAt: new Date().toISOString(),
+    lastUsedRecipe: null,
     captures: [],
   });
 }
@@ -74,7 +77,22 @@ export class RecentsStore {
       const next = RecentsIndexSchema.parse({
         schemaVersion: 1,
         updatedAt: new Date().toISOString(),
+        lastUsedRecipe: index.lastUsedRecipe,
         captures,
+      });
+      await this.#writeUnlocked(next);
+      return next;
+    });
+  }
+
+  async rememberRecipe(recipe: CaptureRecipe): Promise<RecentsIndex> {
+    const parsedRecipe = CaptureRecipeSchema.parse(recipe);
+    return this.#exclusive(async () => {
+      const index = await this.#readUnlocked();
+      const next = RecentsIndexSchema.parse({
+        ...index,
+        updatedAt: new Date().toISOString(),
+        lastUsedRecipe: parsedRecipe,
       });
       await this.#writeUnlocked(next);
       return next;

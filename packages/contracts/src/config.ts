@@ -26,6 +26,10 @@ export const VIEWPORT_PRESETS = {
 
 export const DEFAULT_VIEWPORTS = [VIEWPORT_PRESETS.desktop, VIEWPORT_PRESETS.mobile] as const;
 
+export const DEFAULT_MAX_RESOURCE_BYTES = 25 * 1024 * 1024;
+export const DEFAULT_MAX_CAPTURE_RESOURCE_BYTES = 512 * 1024 * 1024;
+export const DEFAULT_RESOURCE_BODY_CONCURRENCY = 3;
+
 function makeDefaultViewports(): Array<z.infer<typeof ViewportSchema>> {
   return DEFAULT_VIEWPORTS.map((viewport) => ({ ...viewport }));
 }
@@ -41,6 +45,24 @@ export const CrawlConfigSchema = z
     pageTimeoutMs: z.number().int().min(1_000).max(300_000).default(30_000),
     crawlConcurrency: z.number().int().min(1).max(8).default(3),
     maxElementsPerPage: z.number().int().min(100).max(100_000).default(10_000),
+    maxResourceBytes: z
+      .number()
+      .int()
+      .min(1)
+      .max(1024 * 1024 * 1024)
+      .default(DEFAULT_MAX_RESOURCE_BYTES),
+    maxCaptureResourceBytes: z
+      .number()
+      .int()
+      .min(1)
+      .max(16 * 1024 * 1024 * 1024)
+      .default(DEFAULT_MAX_CAPTURE_RESOURCE_BYTES),
+    resourceBodyConcurrency: z
+      .number()
+      .int()
+      .min(1)
+      .max(16)
+      .default(DEFAULT_RESOURCE_BODY_CONCURRENCY),
     headed: z.boolean().default(false),
   })
   .strict()

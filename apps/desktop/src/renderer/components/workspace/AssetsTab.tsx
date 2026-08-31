@@ -117,6 +117,7 @@ export function AssetsTab({ manifest }: { readonly manifest: CaptureManifest }) 
 }
 
 function AssetCard({ resource }: { readonly resource: ResourceManifestEntry }) {
+  const httpError = resource.httpStatus >= 400;
   return (
     <article className="min-w-0 bg-[#0d0e12] p-2.5 transition-colors hover:bg-[#111217]">
       <div className="relative h-[130px] overflow-hidden rounded-[8px] border border-white/[0.07] bg-[#090a0d]">
@@ -133,12 +134,14 @@ function AssetCard({ resource }: { readonly resource: ResourceManifestEntry }) {
         <span
           className={cn(
             'absolute right-1.5 top-1.5 rounded border px-1.5 py-0.5 text-[7px] font-semibold uppercase tracking-[0.08em] backdrop-blur-md',
-            resource.captured
-              ? 'border-emerald-400/15 bg-emerald-400/[0.08] text-emerald-300/70'
-              : 'border-amber-400/15 bg-amber-400/[0.08] text-amber-300/70',
+            httpError
+              ? 'border-red-400/15 bg-red-400/[0.08] text-red-300/75'
+              : resource.captured
+                ? 'border-emerald-400/15 bg-emerald-400/[0.08] text-emerald-300/70'
+                : 'border-amber-400/15 bg-amber-400/[0.08] text-amber-300/70',
           )}
         >
-          {resource.captured ? 'Saved' : 'Skipped'}
+          {httpError ? `HTTP ${resource.httpStatus}` : resource.captured ? 'Saved' : 'Skipped'}
         </span>
       </div>
       <div className="px-1 pb-1 pt-2.5">

@@ -18,6 +18,8 @@ const ERROR_GUIDANCE: Partial<Record<SerializedSitepullError['code'], string>> =
     'The site did not establish a trusted TLS connection. Verify it opens in your system browser.',
   NAVIGATION_TIMEOUT:
     'The page did not become ready before the configured timeout. Increase it in Advanced Settings or retry.',
+  HTTP_CLIENT_ERROR:
+    'The server says this route is unavailable or requires different access. Check the address and open it in your browser before retrying.',
   HTTP_FORBIDDEN:
     'The server declined the browser request. Sitepull will not attempt to bypass access controls.',
   NO_HTML_DOCUMENT:

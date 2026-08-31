@@ -1,6 +1,6 @@
 {
   "name": "@sitepull/desktop",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "productName": "Sitepull",
   "description": "Capture browser-delivered design references into inspectable local artifacts.",
@@ -22,6 +22,7 @@
     "make:mac": "pnpm install:packaged-browser && pnpm prepare:makers && electron-forge make --platform=darwin",
     "make:linux": "pnpm install:packaged-browser && pnpm prepare:makers && electron-forge make --platform=linux",
     "make:windows": "pnpm install:packaged-browser && pnpm prepare:makers && electron-forge make --platform=win32",
+    "smoke:packaged": "node scripts/smoke-packaged-app.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.renderer.json --noEmit",
     "test": "pnpm --dir ../.. exec vitest run apps/desktop/src/main"
   },
@@ -43,7 +44,6 @@
     "@electron-forge/cli": "7.11.2",
     "@electron-forge/maker-deb": "7.11.2",
     "@electron-forge/maker-dmg": "7.11.2",
-    "@electron-forge/maker-rpm": "7.11.2",
     "@electron-forge/maker-squirrel": "7.11.2",
     "@electron-forge/maker-zip": "7.11.2",
     "@electron-forge/plugin-fuses": "7.11.2",

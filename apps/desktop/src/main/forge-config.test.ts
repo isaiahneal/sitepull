@@ -4,6 +4,8 @@ import { describe, expect, it } from 'vitest';
 
 import forgeConfig, {
   DESKTOP_ICON_PATHS,
+  PLAYWRIGHT_WEBKIT_FONT_RECOMMENDATIONS,
+  PLAYWRIGHT_WEBKIT_UBUNTU_24_DEPENDENCIES,
   PRODUCTION_DEPLOY_ARGS,
   desktopIconForPlatform,
   packagedMacAppPath,
@@ -23,7 +25,6 @@ describe('Electron Forge distribution configuration', () => {
       { name: 'zip', platforms: ['darwin', 'linux', 'win32'] },
       { name: 'dmg', platforms: ['darwin'] },
       { name: 'deb', platforms: ['linux'] },
-      { name: 'rpm', platforms: ['linux'] },
       { name: 'squirrel', platforms: ['win32'] },
     ]);
   });
@@ -85,5 +86,15 @@ describe('Electron Forge distribution configuration', () => {
       CI: 'true',
       pnpm_config_verify_deps_before_run: 'false',
     });
+  });
+
+  it('declares the Ubuntu 24 WebKit runtime and font dependencies in the DEB', () => {
+    expect(PLAYWRIGHT_WEBKIT_UBUNTU_24_DEPENDENCIES).toContain('libgtk-4-1');
+    expect(PLAYWRIGHT_WEBKIT_UBUNTU_24_DEPENDENCIES).toContain('libgstreamer1.0-0');
+    expect(PLAYWRIGHT_WEBKIT_UBUNTU_24_DEPENDENCIES).toContain('libicu74');
+    expect(PLAYWRIGHT_WEBKIT_FONT_RECOMMENDATIONS).toContain('fonts-noto-color-emoji');
+    expect(new Set(PLAYWRIGHT_WEBKIT_UBUNTU_24_DEPENDENCIES).size).toBe(
+      PLAYWRIGHT_WEBKIT_UBUNTU_24_DEPENDENCIES.length,
+    );
   });
 });

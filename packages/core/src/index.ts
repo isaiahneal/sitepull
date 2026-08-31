@@ -1,6 +1,7 @@
 export * from './ai-context.js';
 export * from './analyze.js';
 export * from './async.js';
+export * from './browser-network-policy.js';
 export * from './components.js';
 export * from './design.js';
 export * from './errors.js';
@@ -9,6 +10,7 @@ export * from './network-policy.js';
 export * from './paths.js';
 export * from './png.js';
 export * from './project.js';
+export * from './resource-budget.js';
 export * from './resources.js';
 export * from './run-capture.js';
 export * from './url.js';

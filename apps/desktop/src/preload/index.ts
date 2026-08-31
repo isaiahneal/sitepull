@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer } from 'electron';
 import {
   CancelCapturePayloadSchema,
   CancelCaptureResultSchema,
+  CaptureJobSnapshotResultSchema,
   CaptureManifestSchema,
   CaptureReferencePayloadSchema,
   EmptyPayloadSchema,
@@ -53,6 +54,13 @@ const api = Object.freeze({
       CancelCapturePayloadSchema,
       CancelCaptureResultSchema,
       payload,
+    ),
+  getCaptureJob: () =>
+    invoke(
+      SITEPULL_IPC_CHANNELS.getCaptureJob,
+      EmptyPayloadSchema,
+      CaptureJobSnapshotResultSchema,
+      {},
     ),
   getCapture: (payload) =>
     invoke(

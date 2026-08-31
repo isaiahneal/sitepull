@@ -29,6 +29,7 @@ export const ResourceManifestEntrySchema = z
     finalUrl: HttpUrlSchema.optional(),
     kind: ResourceKindSchema,
     contentType: z.string().max(1_024).nullable(),
+    /** Zero records a resource gap where policy or budget prevented an HTTP response. */
     httpStatus: z.number().int().min(0).max(599),
     localPath: SafeRelativePathSchema.nullable(),
     byteSize: ByteCountSchema,

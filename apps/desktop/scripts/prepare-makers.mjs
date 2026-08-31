@@ -1,10 +1,21 @@
 import { execFile } from 'node:child_process';
+import { rm } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
 const require = createRequire(import.meta.url);
+const desktopRoot = path.resolve(import.meta.dirname, '..');
+const makerOutputRoot = path.join(desktopRoot, 'out', 'make');
+
+if (
+  path.basename(makerOutputRoot) !== 'make' ||
+  path.basename(path.dirname(makerOutputRoot)) !== 'out'
+) {
+  throw new Error(`Refusing to clear an unexpected maker output path: ${makerOutputRoot}`);
+}
+await rm(makerOutputRoot, { recursive: true, force: true });
 
 async function canLoad(entryPoint) {
   try {

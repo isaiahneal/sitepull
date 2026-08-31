@@ -11,12 +11,13 @@ import {
   HttpUrlSchema,
   SafeRelativePathSchema,
 } from './primitives.js';
-import { RecentsIndexSchema } from './recents.js';
+import { CaptureRecipeSchema, RecentsIndexSchema } from './recents.js';
 import { CaptureResultSummarySchema } from './results.js';
 
 export const SITEPULL_IPC_CHANNELS = {
   startCapture: 'sitepull:capture:start',
   cancelCapture: 'sitepull:capture:cancel',
+  getCaptureJob: 'sitepull:capture:job:get',
   getCapture: 'sitepull:capture:get',
   exportCapture: 'sitepull:capture:export',
   listRecents: 'sitepull:recents:list',
@@ -76,6 +77,7 @@ export const ReadCaptureFilePayloadSchema = z
 export const StartCaptureResultSchema = z
   .object({
     captureId: CaptureIdSchema,
+    recipe: CaptureRecipeSchema,
   })
   .strict();
 
@@ -85,6 +87,80 @@ export const CancelCaptureResultSchema = z
     cancellationRequested: z.boolean(),
   })
   .strict();
+
+export const CAPTURE_EVENT_REPLAY_LIMIT = 1_000;
+
+const CaptureEventReplaySchema = z.array(CaptureEventSchema).max(CAPTURE_EVENT_REPLAY_LIMIT);
+
+export const CaptureJobSnapshotSchema = z
+  .discriminatedUnion('state', [
+    z
+      .object({
+        state: z.literal('starting'),
+        captureId: z.null(),
+        recipe: CaptureRecipeSchema,
+        events: z.tuple([]),
+      })
+      .strict(),
+    z
+      .object({
+        state: z.literal('active'),
+        captureId: CaptureIdSchema,
+        recipe: CaptureRecipeSchema,
+        events: CaptureEventReplaySchema,
+      })
+      .strict(),
+    z
+      .object({
+        state: z.literal('terminal'),
+        captureId: CaptureIdSchema,
+        recipe: CaptureRecipeSchema,
+        events: CaptureEventReplaySchema.min(1),
+      })
+      .strict(),
+  ])
+  .superRefine((snapshot, context) => {
+    if (snapshot.captureId === null) return;
+
+    let previousSequence = -1;
+    for (const [index, event] of snapshot.events.entries()) {
+      if (event.captureId !== snapshot.captureId) {
+        context.addIssue({
+          code: 'custom',
+          message: 'Replay events must belong to the snapshot capture',
+          path: ['events', index, 'captureId'],
+        });
+      }
+      if (event.sequence <= previousSequence) {
+        context.addIssue({
+          code: 'custom',
+          message: 'Replay event sequences must be strictly increasing',
+          path: ['events', index, 'sequence'],
+        });
+      }
+      previousSequence = event.sequence;
+    }
+
+    const terminalIndex = snapshot.events.findIndex(
+      (event) => event.type === 'complete' || event.type === 'error',
+    );
+    if (snapshot.state === 'active' && terminalIndex !== -1) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Active snapshots cannot contain terminal events',
+        path: ['events', terminalIndex],
+      });
+    }
+    if (snapshot.state === 'terminal' && terminalIndex !== snapshot.events.length - 1) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Terminal snapshots must end with their only terminal event',
+        path: ['events'],
+      });
+    }
+  });
+
+export const CaptureJobSnapshotResultSchema = CaptureJobSnapshotSchema.nullable();
 
 export const ExportCaptureResultSchema = z
   .object({
@@ -143,6 +219,13 @@ const CancelCaptureRequestSchema = z
   .object({
     channel: z.literal(SITEPULL_IPC_CHANNELS.cancelCapture),
     payload: CancelCapturePayloadSchema,
+  })
+  .strict();
+
+const GetCaptureJobRequestSchema = z
+  .object({
+    channel: z.literal(SITEPULL_IPC_CHANNELS.getCaptureJob),
+    payload: EmptyPayloadSchema,
   })
   .strict();
 
@@ -205,6 +288,7 @@ const CopyAiContextRequestSchema = z
 export const IpcRequestSchema = z.discriminatedUnion('channel', [
   StartCaptureRequestSchema,
   CancelCaptureRequestSchema,
+  GetCaptureJobRequestSchema,
   GetCaptureRequestSchema,
   ExportCaptureRequestSchema,
   ListRecentsRequestSchema,
@@ -219,6 +303,7 @@ export const IpcRequestSchema = z.discriminatedUnion('channel', [
 export const SITEPULL_IPC_PAYLOAD_SCHEMAS = {
   [SITEPULL_IPC_CHANNELS.startCapture]: StartCapturePayloadSchema,
   [SITEPULL_IPC_CHANNELS.cancelCapture]: CancelCapturePayloadSchema,
+  [SITEPULL_IPC_CHANNELS.getCaptureJob]: EmptyPayloadSchema,
   [SITEPULL_IPC_CHANNELS.getCapture]: GetCapturePayloadSchema,
   [SITEPULL_IPC_CHANNELS.exportCapture]: ExportCapturePayloadSchema,
   [SITEPULL_IPC_CHANNELS.listRecents]: EmptyPayloadSchema,
@@ -251,6 +336,7 @@ export interface SitepullDesktopApi {
   readonly cancelCapture: (
     payload: CancelCapturePayload,
   ) => Promise<IpcResult<CancelCaptureResult>>;
+  readonly getCaptureJob: () => Promise<IpcResult<CaptureJobSnapshot | null>>;
   readonly getCapture: (
     payload: GetCapturePayload,
   ) => Promise<IpcResult<z.infer<typeof CaptureManifestSchema>>>;
@@ -285,6 +371,7 @@ export type ExportCapturePayload = z.infer<typeof ExportCapturePayloadSchema>;
 export type ReadCaptureFilePayload = z.infer<typeof ReadCaptureFilePayloadSchema>;
 export type StartCaptureResult = z.infer<typeof StartCaptureResultSchema>;
 export type CancelCaptureResult = z.infer<typeof CancelCaptureResultSchema>;
+export type CaptureJobSnapshot = z.infer<typeof CaptureJobSnapshotSchema>;
 export type ExportCaptureResult = z.infer<typeof ExportCaptureResultSchema>;
 export type FilePreviewResult = z.infer<typeof FilePreviewResultSchema>;
 export type OutputDirectorySelectionResult = z.infer<typeof OutputDirectorySelectionResultSchema>;

@@ -1,7 +1,7 @@
 import type { CaptureResultSummary } from '@sitepull/contracts';
 import { describe, expect, it } from 'vitest';
 
-import { runCli, type CliIo, type SignalSource } from './cli.js';
+import { runCli, SITEPULL_VERSION, type CliIo, type SignalSource } from './cli.js';
 import type { PullDependencies } from './pull.js';
 
 function completedSummary(): CaptureResultSummary {
@@ -209,6 +209,7 @@ describe('runCli', () => {
     expect(pullHelpOutput.stdout()).toContain('--ai-pack');
     expect(pullHelpOutput.stdout()).toContain('--headless');
     expect(pullHelpOutput.stdout()).toContain('sitepull pull example.com');
-    expect(versionOutput.stdout()).toContain('sitepull/0.1.0');
+    expect(SITEPULL_VERSION).toBe('0.2.0');
+    expect(versionOutput.stdout()).toContain('sitepull/0.2.0');
   });
 });

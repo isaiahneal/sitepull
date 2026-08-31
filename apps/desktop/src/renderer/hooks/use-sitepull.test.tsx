@@ -4,6 +4,7 @@ import { act, renderHook, waitFor } from '@testing-library/react';
 import {
   DEFAULT_CRAWL_CONFIG,
   type CaptureEvent,
+  type CaptureRecipe,
   type IpcResult,
   type SitepullDesktopApi,
   type SitepullError,
@@ -22,6 +23,16 @@ const bridgeError: SitepullError = {
 
 const failure: IpcResult<never> = { ok: false, error: bridgeError };
 const success = <T,>(data: T): IpcResult<T> => ({ ok: true, data });
+const savedRecipe: CaptureRecipe = {
+  url: 'https://example.com/',
+  allowHttpFallback: true,
+  outputDirectory: '/tmp/sitepull',
+  config: {
+    ...DEFAULT_CRAWL_CONFIG,
+    maxDepth: 4,
+    viewports: DEFAULT_CRAWL_CONFIG.viewports.map((viewport) => ({ ...viewport })),
+  },
+};
 
 describe('useSitepull capture startup', () => {
   it('adopts and retains a terminal event emitted before startCapture resolves', async () => {
@@ -36,6 +47,7 @@ describe('useSitepull capture startup', () => {
       cancelCapture: vi.fn(({ captureId }) =>
         Promise.resolve(success({ captureId, cancellationRequested: true })),
       ),
+      getCaptureJob: vi.fn(() => Promise.resolve(success(null))),
       getCapture: vi.fn(() => Promise.resolve(failure)),
       exportCapture: vi.fn(() => Promise.resolve(failure)),
       listRecents: vi.fn(() =>
@@ -43,6 +55,7 @@ describe('useSitepull capture startup', () => {
           success({
             schemaVersion: 1 as const,
             updatedAt: new Date().toISOString(),
+            lastUsedRecipe: savedRecipe,
             captures: [],
           }),
         ),
@@ -63,6 +76,7 @@ describe('useSitepull capture startup', () => {
 
     const { result, unmount } = renderHook(() => useSitepull());
     await waitFor(() => expect(listener).toBeDefined());
+    await waitFor(() => expect(result.current.model.lastUsedRecipe).toEqual(savedRecipe));
 
     let startPromise: Promise<void> | undefined;
     act(() => {
@@ -94,13 +108,19 @@ describe('useSitepull capture startup', () => {
     expect(result.current.model.session?.events).toContainEqual(earlyError);
 
     await act(async () => {
-      resolveStart?.({ ok: true, data: { captureId: 'capture-fast' } });
+      resolveStart?.({ ok: true, data: { captureId: 'capture-fast', recipe: savedRecipe } });
       await startPromise;
     });
 
     expect(result.current.model.screen).toBe('error');
     expect(result.current.model.error?.code).toBe('NAVIGATION_TIMEOUT');
     expect(result.current.model.session?.events).toContainEqual(earlyError);
+    expect(result.current.model.viewRecipe).toEqual(savedRecipe);
+
+    act(() => result.current.prepareCaptureAgain(savedRecipe));
+    expect(result.current.model.screen).toBe('empty');
+    expect(result.current.model.draftRecipe).toEqual(savedRecipe);
+    expect(result.current.model.draftRecipe).not.toBe(savedRecipe);
     unmount();
   });
 
@@ -117,6 +137,7 @@ describe('useSitepull capture startup', () => {
       cancelCapture: vi.fn(({ captureId }) =>
         Promise.resolve(success({ captureId, cancellationRequested: true })),
       ),
+      getCaptureJob: vi.fn(() => Promise.resolve(success(null))),
       getCapture: vi.fn(() => pendingCapture),
       exportCapture: vi.fn(() => Promise.resolve(failure)),
       listRecents: vi.fn(() =>
@@ -124,6 +145,7 @@ describe('useSitepull capture startup', () => {
           success({
             schemaVersion: 1 as const,
             updatedAt: new Date().toISOString(),
+            lastUsedRecipe: null,
             captures: [],
           }),
         ),

@@ -116,9 +116,69 @@ export const PageFileManifestSchema = z
 
 export const PageCaptureStatusSchema = z.enum(['captured', 'failed', 'cancelled']);
 
+export const PageCaptureAttemptOutcomeSchema = z.enum(['captured', 'retrying', 'failed']);
+
+export const PageCaptureAttemptSchema = z
+  .object({
+    attempt: z.number().int().min(1).max(10),
+    startedAt: IsoDateTimeSchema,
+    completedAt: IsoDateTimeSchema,
+    durationMs: NonNegativeIntegerSchema,
+    outcome: PageCaptureAttemptOutcomeSchema,
+    httpStatus: z.number().int().min(0).max(599).nullable(),
+    retryDelayMs: NonNegativeIntegerSchema.optional(),
+    error: SitepullErrorSchema.optional(),
+  })
+  .strict()
+  .superRefine((attempt, context) => {
+    if (attempt.outcome === 'captured') {
+      if (attempt.error !== undefined) {
+        context.addIssue({
+          code: 'custom',
+          message: 'Captured attempts cannot include an error',
+          path: ['error'],
+        });
+      }
+      if (attempt.retryDelayMs !== undefined) {
+        context.addIssue({
+          code: 'custom',
+          message: 'Captured attempts cannot include a retry delay',
+          path: ['retryDelayMs'],
+        });
+      }
+      return;
+    }
+
+    if (attempt.error === undefined) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Unsuccessful attempts require a structured error',
+        path: ['error'],
+      });
+    }
+    if (attempt.outcome === 'retrying' && attempt.retryDelayMs === undefined) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Retrying attempts require a retry delay',
+        path: ['retryDelayMs'],
+      });
+    }
+    if (attempt.outcome === 'failed' && attempt.retryDelayMs !== undefined) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Terminal attempts cannot include a retry delay',
+        path: ['retryDelayMs'],
+      });
+    }
+  });
+
 export const PageMetricsSchema = z
   .object({
     visibleElements: NonNegativeIntegerSchema,
+    /** Optional so v0.1.x page manifests remain readable. New captures always populate it. */
+    elementsTruncated: z.boolean().optional(),
+    /** Optional so v0.1.x page manifests remain readable. New captures always populate it. */
+    inaccessibleStylesheets: NonNegativeIntegerSchema.optional(),
     discoveredLinks: NonNegativeIntegerSchema,
     networkRequests: NonNegativeIntegerSchema,
     capturedResources: NonNegativeIntegerSchema,
@@ -146,6 +206,8 @@ export const PageManifestSchema = z
     files: PageFileManifestSchema.nullable(),
     screenshots: z.array(ScreenshotManifestSchema),
     metrics: PageMetricsSchema,
+    /** Optional so v0.1.0 capture manifests remain readable. New captures always populate it. */
+    attempts: z.array(PageCaptureAttemptSchema).min(1).max(10).optional(),
     errors: z.array(SitepullErrorSchema),
   })
   .strict()
@@ -163,6 +225,40 @@ export const PageManifestSchema = z
         message: 'Failed pages require at least one structured error',
         path: ['errors'],
       });
+    }
+
+    if (page.attempts !== undefined) {
+      for (const [index, attempt] of page.attempts.entries()) {
+        if (attempt.attempt !== index + 1) {
+          context.addIssue({
+            code: 'custom',
+            message: 'Page attempts must be numbered consecutively from one',
+            path: ['attempts', index, 'attempt'],
+          });
+        }
+        if (index < page.attempts.length - 1 && attempt.outcome !== 'retrying') {
+          context.addIssue({
+            code: 'custom',
+            message: 'Only retrying attempts may precede the final attempt',
+            path: ['attempts', index, 'outcome'],
+          });
+        }
+      }
+      const finalOutcome = page.attempts.at(-1)?.outcome;
+      if (page.status === 'captured' && finalOutcome !== 'captured') {
+        context.addIssue({
+          code: 'custom',
+          message: 'Captured pages require a captured final attempt',
+          path: ['attempts'],
+        });
+      }
+      if (page.status === 'failed' && finalOutcome !== 'failed') {
+        context.addIssue({
+          code: 'custom',
+          message: 'Failed pages require a failed final attempt',
+          path: ['attempts'],
+        });
+      }
     }
 
     const viewportNames = new Set<string>();
@@ -188,5 +284,7 @@ export type DocumentManifest = z.infer<typeof DocumentManifestSchema>;
 export type ScreenshotManifest = z.infer<typeof ScreenshotManifestSchema>;
 export type PageFileManifest = z.infer<typeof PageFileManifestSchema>;
 export type PageCaptureStatus = z.infer<typeof PageCaptureStatusSchema>;
+export type PageCaptureAttemptOutcome = z.infer<typeof PageCaptureAttemptOutcomeSchema>;
+export type PageCaptureAttempt = z.infer<typeof PageCaptureAttemptSchema>;
 export type PageMetrics = z.infer<typeof PageMetricsSchema>;
 export type PageManifest = z.infer<typeof PageManifestSchema>;

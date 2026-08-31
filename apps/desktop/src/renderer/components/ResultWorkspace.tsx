@@ -1,5 +1,13 @@
 import { Tabs } from '@base-ui/react/tabs';
-import { Archive, Clipboard, FolderOpen, LoaderCircle, Package, PanelTopOpen } from 'lucide-react';
+import {
+  Archive,
+  Clipboard,
+  FolderOpen,
+  LoaderCircle,
+  Package,
+  PanelTopOpen,
+  RotateCw,
+} from 'lucide-react';
 import type { ReactNode } from 'react';
 import { useState } from 'react';
 
@@ -31,10 +39,15 @@ const WORKSPACE_TABS = [
 ] as const;
 
 export function ResultWorkspace({ controller, notify }: ResultWorkspaceProps) {
-  const { model, exportCapture, invokeSystemAction, readCaptureFile } = controller;
+  const { model, exportCapture, invokeSystemAction, prepareCaptureAgain, readCaptureFile } =
+    controller;
   const manifest = model.manifest;
   const [workingAction, setWorkingAction] = useState<string | null>(null);
   if (!manifest) return null;
+  const captureRecipe =
+    model.viewRecipe ??
+    model.recents.find((recent) => recent.captureId === manifest.captureId)?.recipe ??
+    null;
 
   const exportProject = async (mode: 'ai-pack' | 'full-capture') => {
     setWorkingAction(mode);
@@ -116,6 +129,22 @@ export function ResultWorkspace({ controller, notify }: ResultWorkspaceProps) {
             </div>
 
             <div className="flex flex-wrap items-center gap-1.5">
+              <Button
+                variant="secondary"
+                size="sm"
+                disabled={workingAction !== null || captureRecipe === null}
+                onClick={() => {
+                  if (captureRecipe !== null) prepareCaptureAgain(captureRecipe);
+                }}
+                title={
+                  captureRecipe === null
+                    ? 'This older capture does not include a saved recipe.'
+                    : 'Preload this capture recipe and output folder'
+                }
+              >
+                <RotateCw className="size-3.5" />
+                Capture Again
+              </Button>
               <Button
                 variant="primary"
                 size="sm"

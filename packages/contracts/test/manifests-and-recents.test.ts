@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
-import { CaptureManifestSchema, RecentsIndexSchema, RecentCaptureSchema } from '../src/index.js';
+import {
+  CaptureManifestSchema,
+  CaptureRecipeSchema,
+  RecentsIndexSchema,
+  RecentCaptureSchema,
+} from '../src/index.js';
 
 const capturedAt = '2026-08-30T12:00:00.000Z';
 
@@ -28,7 +33,15 @@ function completeManifest() {
       sourcePageCount: 0,
       colors: [],
       typography: [],
-      spacing: [],
+      spacing: [
+        {
+          value: '-21.265625px',
+          pixels: -21.265625,
+          occurrences: 2,
+          contexts: ['margin', 'margin-top'],
+          routes: ['/'],
+        },
+      ],
       radii: [],
       shadows: [],
       borders: [],
@@ -84,6 +97,7 @@ describe('capture manifest', () => {
     expect(parsed.config.engine).toBe('webkit');
     expect(parsed.config.maxPages).toBe(25);
     expect(parsed.summary.captureId).toBe(parsed.captureId);
+    expect(parsed.design.spacing[0]?.pixels).toBe(-21.265625);
   });
 
   it('rejects a summary that refers to another capture', () => {
@@ -104,6 +118,16 @@ describe('capture manifest', () => {
 });
 
 describe('durable recents', () => {
+  const recipe = CaptureRecipeSchema.parse({
+    url: 'https://example.com/',
+    allowHttpFallback: true,
+    outputDirectory: '/tmp/sitepull',
+    config: {
+      maxDepth: 4,
+      maxPages: 80,
+      viewports: [{ name: 'desktop', width: 1280, height: 800 }],
+    },
+  });
   const recent = {
     captureId: 'capture-123',
     url: 'https://example.com/',
@@ -115,10 +139,43 @@ describe('durable recents', () => {
     byteSize: 14_200_000,
     status: 'completed',
     availability: 'missing',
+    recipe,
   } as const;
 
   it('represents an externally deleted capture without losing history', () => {
-    expect(RecentCaptureSchema.parse(recent).availability).toBe('missing');
+    const parsed = RecentCaptureSchema.parse(recent);
+    expect(parsed.availability).toBe('missing');
+    expect(parsed.recipe).toEqual(recipe);
+    expect(parsed.recipe?.config).toMatchObject({
+      engine: 'webkit',
+      maxDepth: 4,
+      maxPages: 80,
+      crawlConcurrency: 3,
+    });
+  });
+
+  it('loads a legacy recent index without inventing a capture recipe', () => {
+    const legacyRecent = { ...recent } as Record<string, unknown>;
+    delete legacyRecent.recipe;
+    const parsed = RecentsIndexSchema.parse({
+      schemaVersion: 1,
+      updatedAt: capturedAt,
+      captures: [legacyRecent],
+    });
+
+    expect(parsed.lastUsedRecipe).toBeNull();
+    expect(parsed.captures[0]?.recipe).toBeNull();
+  });
+
+  it('round-trips the last-used recipe with the complete effective config', () => {
+    const parsed = RecentsIndexSchema.parse({
+      schemaVersion: 1,
+      updatedAt: capturedAt,
+      lastUsedRecipe: recipe,
+      captures: [recent],
+    });
+
+    expect(parsed.lastUsedRecipe).toEqual(recipe);
   });
 
   it('rejects duplicate capture records', () => {

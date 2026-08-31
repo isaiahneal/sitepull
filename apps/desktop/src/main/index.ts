@@ -5,6 +5,7 @@ import squirrelStartup from 'electron-squirrel-startup';
 
 import { CaptureRegistry } from './capture-registry.js';
 import { CAPTURE_SCHEME } from './capture-url.js';
+import { loadCore } from './core.js';
 import { registerDesktopIpc } from './ipc.js';
 import { CaptureJobManager } from './job-manager.js';
 import { OutputAuthorization } from './output-authorization.js';
@@ -52,7 +53,32 @@ async function openMainWindow(): Promise<void> {
   }
 }
 
+async function verifyPackagedBrowserRuntimeIfRequested(): Promise<void> {
+  if (!app.isPackaged || process.env.SITEPULL_PACKAGED_RUNTIME_SMOKE === undefined) return;
+  const { webkit } = await import('playwright');
+  const browser = await webkit.launch({ headless: true });
+  try {
+    const page = await browser.newPage();
+    await page.setContent('<main data-sitepull-runtime="ready">Sitepull runtime ready</main>');
+    const ready = await page.locator('[data-sitepull-runtime="ready"]').textContent();
+    if (ready !== 'Sitepull runtime ready') {
+      throw new Error('The packaged Sitepull WebKit runtime did not render its smoke document.');
+    }
+  } finally {
+    await browser.close();
+  }
+}
+
 async function bootstrap(): Promise<void> {
+  // Fail startup before exposing the UI if the packaged core bundle or its
+  // Playwright dependency cannot be loaded from the configured Resources path.
+  await loadCore();
+  await verifyPackagedBrowserRuntimeIfRequested();
+  if (process.env.SITEPULL_PACKAGED_RUNTIME_SMOKE === 'probe-only') {
+    app.quit();
+    return;
+  }
+
   const iconPath = desktopWindowIconPath(app.isPackaged, process.resourcesPath, app.getAppPath());
   app.setAboutPanelOptions({
     applicationName: 'Sitepull',
@@ -71,7 +97,14 @@ async function bootstrap(): Promise<void> {
       .filter((capture) => capture.availability === 'available')
       .map((capture) => registry.registerExisting(capture.captureId, capture.outputPath)),
   );
-  const outputs = await OutputAuthorization.create(path.join(app.getPath('documents'), 'Sitepull'));
+  const persistedOutputDirectories = [
+    recentIndex.lastUsedRecipe?.outputDirectory,
+    ...recentIndex.captures.map((capture) => capture.recipe?.outputDirectory),
+  ].filter((directory): directory is string => directory !== undefined);
+  const outputs = await OutputAuthorization.create(
+    path.join(app.getPath('documents'), 'Sitepull'),
+    persistedOutputDirectories,
+  );
   jobs = new CaptureJobManager(registry, recents);
   installCaptureProtocol(registry);
   unregisterIpc = registerDesktopIpc({

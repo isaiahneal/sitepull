@@ -51,10 +51,107 @@ function likelyContainerWidth(input: AiContextInput): string {
 }
 
 function routeLines(pages: readonly PageManifest[]): string[] {
-  return pages.map(
-    (page) =>
-      `- \`${page.route}\` — ${page.title || 'Untitled'}; ${page.metrics.visibleElements} visible elements; ${page.screenshots.length} viewport capture(s)`,
+  return pages.map((page) => {
+    if (page.status !== 'captured') {
+      const attempts = page.attempts?.length ?? 1;
+      const reason = page.errors[0]?.message ?? 'Capture failed without detailed evidence.';
+      return `- \`${page.route}\` — **failed** after ${attempts} attempt(s); ${reason}`;
+    }
+    const recovered = page.attempts?.some((attempt) => attempt.outcome === 'retrying') ?? false;
+    return `- \`${page.route}\` — ${page.title || 'Untitled'}; ${page.metrics.visibleElements} visible elements; ${page.screenshots.length} viewport capture(s)${recovered ? `; recovered after ${page.attempts?.length ?? 1} attempts` : ''}`;
+  });
+}
+
+function captureCoverage(input: AiContextInput): string[] {
+  const capturedPages = input.pages.filter((page) => page.status === 'captured');
+  const failedPages = input.pages.filter((page) => page.status === 'failed');
+  const recoveredPages = capturedPages.filter(
+    (page) => page.attempts?.some((attempt) => attempt.outcome === 'retrying') ?? false,
   );
+  const capturedResources = input.resources.filter((resource) => resource.captured);
+  const unavailableResources = input.resources.filter((resource) => !resource.captured);
+  const httpErrorResources = input.resources.filter((resource) => resource.httpStatus >= 400);
+  const truncatedElementPages = capturedPages.filter(
+    (page) => page.metrics.elementsTruncated === true,
+  );
+  const inaccessibleStylesheetPages = capturedPages.filter(
+    (page) => (page.metrics.inaccessibleStylesheets ?? 0) > 0,
+  );
+  const inaccessibleStylesheets = inaccessibleStylesheetPages.reduce(
+    (total, page) => total + (page.metrics.inaccessibleStylesheets ?? 0),
+    0,
+  );
+  const unreportedElementPages = capturedPages.filter(
+    (page) => page.metrics.elementsTruncated === undefined,
+  );
+  const unreportedStylesheetPages = capturedPages.filter(
+    (page) => page.metrics.inaccessibleStylesheets === undefined,
+  );
+  const elementInventoryCoverage = [
+    ...(truncatedElementPages.length === 0
+      ? []
+      : [
+          `${truncatedElementPages.length} captured page(s) reached the configured ${input.config.maxElementsPerPage.toLocaleString('en-US')}-visible-element bound (${truncatedElementPages.map((page) => `\`${page.route}\``).join(', ')})`,
+        ]),
+    ...(unreportedElementPages.length === 0
+      ? []
+      : [
+          `truncation telemetry is unavailable for ${unreportedElementPages.length} legacy page record(s) (${unreportedElementPages.map((page) => `\`${page.route}\``).join(', ')})`,
+        ]),
+  ].join('; ');
+  const stylesheetCoverage = [
+    ...(inaccessibleStylesheets === 0
+      ? []
+      : [
+          `${inaccessibleStylesheets} rule list(s) across ${inaccessibleStylesheetPages.length} captured page(s) were inaccessible (${inaccessibleStylesheetPages.map((page) => `\`${page.route}\``).join(', ')}); computed styles for captured elements remain available, but CSS variables and media rules may be incomplete`,
+        ]),
+    ...(unreportedStylesheetPages.length === 0
+      ? []
+      : [
+          `access telemetry is unavailable for ${unreportedStylesheetPages.length} legacy page record(s) (${unreportedStylesheetPages.map((page) => `\`${page.route}\``).join(', ')})`,
+        ]),
+  ].join('; ');
+  const complete =
+    failedPages.length === 0 &&
+    unavailableResources.length === 0 &&
+    httpErrorResources.length === 0 &&
+    truncatedElementPages.length === 0 &&
+    inaccessibleStylesheets === 0 &&
+    unreportedElementPages.length === 0 &&
+    unreportedStylesheetPages.length === 0;
+  return [
+    `- Overall: **${complete ? 'no recorded page, resource, or extraction-evidence gaps' : 'partial; review the gaps below before treating this pack as complete'}**`,
+    `- Pages: ${capturedPages.length} captured of ${input.pages.length} attempted; ${failedPages.length} failed`,
+    `- Resources: ${capturedResources.length} bodies captured of ${input.resources.length} cataloged; ${unavailableResources.length} unavailable or excluded by a safety limit; ${httpErrorResources.length} returned HTTP error status`,
+    `- Retry recovery: ${recoveredPages.length} page(s) succeeded after at least one retry`,
+    `- Element inventories: ${elementInventoryCoverage || 'no captured page reached the configured visible-element bound'}`,
+    `- Stylesheet enumeration: ${stylesheetCoverage || 'no inaccessible stylesheet rule lists were recorded'}`,
+    ...(failedPages.length === 0
+      ? []
+      : [`- Failed routes: ${failedPages.map((page) => `\`${page.route}\``).join(', ')}`]),
+    ...(unavailableResources.length === 0
+      ? []
+      : [
+          `- Resource gap examples: ${unavailableResources
+            .slice(0, 5)
+            .map(
+              (resource) =>
+                `\`${resource.originalUrl}\` (${resource.failureReason ?? 'body unavailable'})`,
+            )
+            .join('; ')}`,
+        ]),
+    ...(httpErrorResources.length === 0
+      ? []
+      : [
+          `- Resource HTTP-error examples: ${httpErrorResources
+            .slice(0, 5)
+            .map(
+              (resource) =>
+                `\`${resource.originalUrl}\` (HTTP ${resource.httpStatus}${resource.captured ? '; error body saved' : '; body unavailable'})`,
+            )
+            .join('; ')}`,
+        ]),
+  ];
 }
 
 function pageBreakdown(page: PageManifest): string[] {
@@ -64,23 +161,57 @@ function pageBreakdown(page: PageManifest): string[] {
         `${screenshot.viewport.name} ${screenshot.viewport.width}×${screenshot.viewport.height}`,
     )
     .join(', ');
+  const evidenceLimits = [
+    ...(page.metrics.elementsTruncated === true ? ['visible-element inventory truncated'] : []),
+    ...(page.metrics.elementsTruncated === undefined
+      ? ['element-truncation telemetry unavailable (legacy manifest)']
+      : []),
+    ...((page.metrics.inaccessibleStylesheets ?? 0) > 0
+      ? [
+          `${page.metrics.inaccessibleStylesheets} inaccessible stylesheet rule list${page.metrics.inaccessibleStylesheets === 1 ? '' : 's'}`,
+        ]
+      : []),
+    ...(page.metrics.inaccessibleStylesheets === undefined
+      ? ['stylesheet-access telemetry unavailable (legacy manifest)']
+      : []),
+  ];
   return [
     `### ${page.route}`,
     '',
     `- Source: ${page.url}`,
+    `- Status: ${page.status}`,
     `- Title: ${page.title || 'Untitled'}`,
     `- Depth: ${page.depth}`,
+    `- Attempts: ${page.attempts?.length ?? 1}`,
     `- Evidence: ${page.metrics.visibleElements} visible elements, ${page.metrics.discoveredLinks} rendered links, ${page.metrics.networkRequests} network requests`,
+    ...(page.status === 'captured'
+      ? [
+          `- Evidence limits: ${evidenceLimits.length === 0 ? 'no element truncation or inaccessible stylesheet rule lists recorded' : evidenceLimits.join('; ')}`,
+        ]
+      : []),
     `- Screenshots: ${screenshotList || 'none'}`,
-    `- Deeper evidence: \`pages/${page.id}/rendered.html\`, \`document.json\`, \`elements.json\`, and \`screenshots/\``,
+    ...(page.files === null
+      ? [
+          `- Failure: ${page.errors[0]?.message ?? 'No detailed page error was recorded.'}`,
+          '- Deeper evidence: no rendered page artifact was committed for this failed route',
+        ]
+      : [
+          `- Deeper evidence: \`pages/${page.id}/rendered.html\`, \`document.json\`, \`elements.json\`, and \`screenshots/\``,
+        ]),
     '',
   ];
 }
 
 export function generateAiContext(input: AiContextInput): string {
+  const capturedPages = input.pages.filter((page) => page.status === 'captured');
   const primaryType = input.design.typography[0];
   const importantAssets = input.resources
-    .filter((resource) => resource.captured && ['image', 'svg', 'icon'].includes(resource.kind))
+    .filter(
+      (resource) =>
+        resource.captured &&
+        resource.httpStatus < 400 &&
+        ['image', 'svg', 'icon'].includes(resource.kind),
+    )
     .sort(
       (left, right) =>
         right.referencedByPages.length - left.referencedByPages.length ||
@@ -98,12 +229,17 @@ export function generateAiContext(input: AiContextInput): string {
     '',
     `- URL: ${input.sourceUrl}`,
     `- Captured: ${input.capturedAt}`,
-    `- Routes captured: ${input.pages.length}`,
+    `- Routes captured: ${capturedPages.length} of ${input.pages.length} attempted`,
+    '',
+    '## Capture Coverage',
+    '',
+    ...captureCoverage(input),
     '',
     '## Capture Configuration',
     '',
     `- Engine: ${input.config.engine}`,
     `- Bounded BFS: depth ${input.config.maxDepth}, at most ${input.config.maxPages} pages, concurrency ${input.config.crawlConcurrency}`,
+    `- Resource body limits: ${formatBytes(input.config.maxResourceBytes)} per response, ${formatBytes(input.config.maxCaptureResourceBytes)} aggregate, ${input.config.resourceBodyConcurrency} concurrent body reads`,
     `- Origin policy: ${input.config.sameOriginOnly ? 'same origin' : 'cross-origin links allowed'}${input.config.includeSubdomains ? ', including subdomains' : ''}`,
     `- Viewports: ${input.config.viewports.map((viewport) => `${viewport.name} ${viewport.width}×${viewport.height}`).join(', ')}`,
     '',
@@ -118,7 +254,7 @@ export function generateAiContext(input: AiContextInput): string {
     '## Layout System',
     '',
     likelyContainerWidth(input),
-    `Observed layout evidence spans ${input.pages.reduce((sum, page) => sum + page.metrics.visibleElements, 0).toLocaleString()} visible elements. Use computed flex/grid properties in \`pages/*/elements.json\` for exact reconstruction.`,
+    `Observed layout evidence spans ${capturedPages.reduce((sum, page) => sum + page.metrics.visibleElements, 0).toLocaleString()} visible elements. Use computed flex/grid properties in \`pages/*/elements.json\` for exact reconstruction.`,
     '',
     '## Color System',
     '',
@@ -175,7 +311,7 @@ export function generateAiContext(input: AiContextInput): string {
     '',
     '## Responsive Behavior',
     '',
-    `Screenshots were rendered independently at ${input.config.viewports.map((viewport) => `${viewport.width}×${viewport.height}`).join(' and ')}. Accessible stylesheet breakpoints: ${input.design.breakpoints.map((token) => token.mediaQuery).join(', ') || 'none observed'}. Compare matching files in each page’s \`screenshots/\` directory.`,
+    `Screenshots were captured at ${input.config.viewports.map((viewport) => `${viewport.width}×${viewport.height}`).join(' and ')} after resizing the stabilized page. Accessible stylesheet breakpoints: ${input.design.breakpoints.map((token) => token.mediaQuery).join(', ') || 'none observed'}. Compare matching files in each page’s \`screenshots/\` directory. JavaScript or server behavior that branches only at initial viewport load may require a separate viewport-specific capture.`,
     '',
     '## Repeated Component Candidates',
     '',
@@ -205,7 +341,7 @@ export function generateAiContext(input: AiContextInput): string {
     '- Treat the screenshots as the visual authority and computed-style summaries as measurable evidence.',
     '- Rebuild semantic components rather than copying delivered minified JavaScript.',
     '- Inferred component and token names are suggestions; preserve raw values when confidence is low.',
-    '- Cross-origin stylesheets may prevent CSS rule enumeration, but their rendered computed styles remain represented on elements.',
+    '- Cross-origin stylesheets may prevent CSS rule enumeration; computed styles remain represented for captured elements, subject to the per-page element bound.',
     '',
     '## File Map',
     '',

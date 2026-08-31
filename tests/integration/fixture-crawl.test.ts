@@ -185,6 +185,268 @@ describe('deterministic fixture crawl', () => {
     expect(exported.files.some((file) => file.startsWith('raw/javascript/'))).toBe(false);
   }, 60_000);
 
+  it('retries transient HTTP pages, honors Retry-After, and preserves permanent failure evidence', async () => {
+    const outputRoot = path.join(os.tmpdir(), `sitepull-retry-${crypto.randomUUID()}`);
+    roots.push(outputRoot);
+    await mkdir(outputRoot);
+    const testCase = crypto.randomUUID();
+    const result = await runCapture(
+      {
+        url: `${fixtureUrl}/retry-suite?case=${testCase}`,
+        outputDirectory: outputRoot,
+        config: {
+          maxDepth: 1,
+          maxPages: 4,
+          crawlConcurrency: 3,
+          pageTimeoutMs: 10_000,
+          viewports: [{ name: 'desktop', width: 800, height: 600 }],
+        },
+      },
+      { allowPrivateHosts: true },
+    );
+
+    const pageFor = (pathname: string) =>
+      result.manifest.pages.find((page) => new URL(page.url).pathname === pathname);
+    const failOnce = pageFor('/retry/fail-once');
+    const rateLimited = pageFor('/retry/rate-limited');
+    const permanent = pageFor('/retry/permanent');
+
+    expect(failOnce).toMatchObject({
+      status: 'captured',
+      httpStatus: 200,
+      attempts: [
+        { attempt: 1, outcome: 'retrying', httpStatus: 503, retryDelayMs: 250 },
+        { attempt: 2, outcome: 'captured', httpStatus: 200 },
+      ],
+    });
+    expect(rateLimited).toMatchObject({
+      status: 'captured',
+      httpStatus: 200,
+      attempts: [
+        { attempt: 1, outcome: 'retrying', httpStatus: 429, retryDelayMs: 1_000 },
+        { attempt: 2, outcome: 'captured', httpStatus: 200 },
+      ],
+    });
+    expect(permanent).toMatchObject({
+      status: 'failed',
+      httpStatus: 503,
+      files: null,
+      attempts: [
+        { attempt: 1, outcome: 'retrying', httpStatus: 503, retryDelayMs: 250 },
+        { attempt: 2, outcome: 'retrying', httpStatus: 503, retryDelayMs: 500 },
+        { attempt: 3, outcome: 'failed', httpStatus: 503 },
+      ],
+      errors: [{ code: 'HTTP_RETRYABLE_STATUS', retryable: true }],
+    });
+    expect(result.manifest.pages).toHaveLength(4);
+    expect(result.summary.counts.pages).toBe(3);
+
+    const failOnceHtml = await readFile(
+      path.join(result.outputDirectory, failOnce?.files?.renderedHtml ?? ''),
+      'utf8',
+    );
+    const rateLimitedHtml = await readFile(
+      path.join(result.outputDirectory, rateLimited?.files?.renderedHtml ?? ''),
+      'utf8',
+    );
+    expect(failOnceHtml).toContain('Recovered after one retry');
+    expect(rateLimitedHtml).toContain('Recovered after Retry-After');
+  }, 30_000);
+
+  it('records non-retryable client responses as failures instead of design evidence', async () => {
+    const outputRoot = path.join(os.tmpdir(), `sitepull-http-client-${crypto.randomUUID()}`);
+    roots.push(outputRoot);
+    await mkdir(outputRoot);
+    const result = await runCapture(
+      {
+        url: `${fixtureUrl}/client-error-suite`,
+        outputDirectory: outputRoot,
+        config: {
+          maxDepth: 1,
+          maxPages: 8,
+          crawlConcurrency: 3,
+          maxElementsPerPage: 100,
+          pageTimeoutMs: 10_000,
+          viewports: [{ name: 'desktop', width: 800, height: 600 }],
+        },
+      },
+      { allowPrivateHosts: true },
+    );
+
+    const suite = result.manifest.pages.find(
+      (page) => new URL(page.url).pathname === '/client-error-suite',
+    );
+    expect(suite).toMatchObject({
+      status: 'captured',
+      httpStatus: 200,
+      metrics: { elementsTruncated: true, inaccessibleStylesheets: 0 },
+    });
+
+    for (const status of [400, 401, 403, 404, 405, 410, 451]) {
+      const page = result.manifest.pages.find(
+        (candidate) => new URL(candidate.url).pathname === `/client-errors/${status}`,
+      );
+      expect(page).toMatchObject({
+        status: 'failed',
+        httpStatus: status,
+        files: null,
+        metrics: { elementsTruncated: false, inaccessibleStylesheets: 0 },
+        attempts: [{ attempt: 1, outcome: 'failed', httpStatus: status }],
+        errors: [
+          {
+            code: status === 403 ? 'HTTP_FORBIDDEN' : 'HTTP_CLIENT_ERROR',
+            retryable: false,
+            details: { status },
+          },
+        ],
+      });
+      await expect(
+        readdir(path.join(result.outputDirectory, 'pages', page?.id ?? 'missing', 'screenshots')),
+      ).rejects.toMatchObject({ code: 'ENOENT' });
+    }
+    expect(result.manifest.pages).toHaveLength(8);
+    expect(result.summary.counts.pages).toBe(1);
+  }, 30_000);
+
+  it('bounds unknown response bodies and the aggregate capture resource budget', async () => {
+    const unknownOutputRoot = path.join(
+      os.tmpdir(),
+      `sitepull-resource-unknown-${crypto.randomUUID()}`,
+    );
+    roots.push(unknownOutputRoot);
+    await mkdir(unknownOutputRoot);
+    const unknownResult = await runCapture(
+      {
+        url: `${fixtureUrl}/resource-budget/unknown`,
+        outputDirectory: unknownOutputRoot,
+        config: {
+          maxDepth: 0,
+          maxPages: 1,
+          maxResourceBytes: 512,
+          maxCaptureResourceBytes: 8_192,
+          resourceBodyConcurrency: 1,
+          pageTimeoutMs: 8_000,
+          viewports: [{ name: 'desktop', width: 800, height: 600 }],
+        },
+      },
+      { allowPrivateHosts: true },
+    );
+    const unknownResource = unknownResult.manifest.resources.find(
+      (resource) => new URL(resource.originalUrl).pathname === '/resource-budget/unknown.css',
+    );
+    expect(unknownResource).toMatchObject({
+      captured: false,
+      localPath: null,
+      sha256: null,
+      failureReason: expect.stringContaining('512 bytes'),
+    });
+    const unknownSourceMap = unknownResult.manifest.resources.find(
+      (resource) => new URL(resource.originalUrl).pathname === '/resource-budget/unknown.js.map',
+    );
+    expect(unknownSourceMap).toMatchObject({
+      kind: 'source-map',
+      captured: false,
+      localPath: null,
+      sha256: null,
+      failureReason: expect.stringContaining('512-byte'),
+    });
+    expect(unknownResult.manifest.config).toMatchObject({
+      maxResourceBytes: 512,
+      maxCaptureResourceBytes: 8_192,
+      resourceBodyConcurrency: 1,
+    });
+
+    const exhaustedUrl = `${fixtureUrl}/resource-budget/source-map-exhausted`;
+    const [exhaustedDocumentResponse, sourceMapScriptResponse] = await Promise.all([
+      fetch(exhaustedUrl),
+      fetch(`${fixtureUrl}/resource-budget/source-map.js`),
+    ]);
+    const [exhaustedDocumentBody, sourceMapScriptBody] = await Promise.all([
+      exhaustedDocumentResponse.arrayBuffer(),
+      sourceMapScriptResponse.arrayBuffer(),
+    ]);
+    const exhaustedLimit = exhaustedDocumentBody.byteLength + sourceMapScriptBody.byteLength;
+    const exhaustedOutputRoot = path.join(
+      os.tmpdir(),
+      `sitepull-resource-exhausted-${crypto.randomUUID()}`,
+    );
+    roots.push(exhaustedOutputRoot);
+    await mkdir(exhaustedOutputRoot);
+    const exhaustedResult = await runCapture(
+      {
+        url: exhaustedUrl,
+        outputDirectory: exhaustedOutputRoot,
+        config: {
+          maxDepth: 0,
+          maxPages: 1,
+          maxResourceBytes: 4_096,
+          maxCaptureResourceBytes: exhaustedLimit,
+          resourceBodyConcurrency: 1,
+          pageTimeoutMs: 8_000,
+          viewports: [{ name: 'desktop', width: 800, height: 600 }],
+        },
+      },
+      { allowPrivateHosts: true },
+    );
+    expect(
+      exhaustedResult.manifest.resources.find(
+        (resource) => new URL(resource.originalUrl).pathname === '/resource-budget/unknown.js.map',
+      ),
+    ).toMatchObject({
+      kind: 'source-map',
+      httpStatus: 0,
+      captured: false,
+      failureReason: expect.stringContaining('budget'),
+    });
+
+    const aggregateUrl = `${fixtureUrl}/resource-budget/aggregate`;
+    const [documentResponse, assetResponse] = await Promise.all([
+      fetch(aggregateUrl),
+      fetch(`${fixtureUrl}/resource-budget/aggregate-a.css`),
+    ]);
+    const [documentBody, assetBody] = await Promise.all([
+      documentResponse.arrayBuffer(),
+      assetResponse.arrayBuffer(),
+    ]);
+    const aggregateLimit = documentBody.byteLength + assetBody.byteLength;
+    const aggregateOutputRoot = path.join(
+      os.tmpdir(),
+      `sitepull-resource-aggregate-${crypto.randomUUID()}`,
+    );
+    roots.push(aggregateOutputRoot);
+    await mkdir(aggregateOutputRoot);
+    const aggregateResult = await runCapture(
+      {
+        url: aggregateUrl,
+        outputDirectory: aggregateOutputRoot,
+        config: {
+          maxDepth: 0,
+          maxPages: 1,
+          maxResourceBytes: 4_096,
+          maxCaptureResourceBytes: aggregateLimit,
+          resourceBodyConcurrency: 1,
+          pageTimeoutMs: 8_000,
+          viewports: [{ name: 'desktop', width: 800, height: 600 }],
+        },
+      },
+      { allowPrivateHosts: true },
+    );
+    const aggregateResources = aggregateResult.manifest.resources.filter((resource) =>
+      /^\/resource-budget\/aggregate-[ab]\.css$/u.test(new URL(resource.originalUrl).pathname),
+    );
+    expect(aggregateResources).toHaveLength(2);
+    expect(aggregateResources.filter((resource) => resource.captured)).toHaveLength(1);
+    expect(aggregateResources.filter((resource) => !resource.captured)).toEqual([
+      expect.objectContaining({
+        localPath: null,
+        sha256: null,
+        failureReason: expect.stringContaining('Capture resource budget'),
+      }),
+    ]);
+    expect(aggregateResult.manifest.config.maxCaptureResourceBytes).toBe(aggregateLimit);
+    expect(aggregateResult.manifest.pages[0]?.metrics.capturedResources).toBe(2);
+  }, 45_000);
+
   it('cancels a live browser job and removes only its staging directory', async () => {
     const outputRoot = path.join(os.tmpdir(), `sitepull-cancel-${crypto.randomUUID()}`);
     roots.push(outputRoot);

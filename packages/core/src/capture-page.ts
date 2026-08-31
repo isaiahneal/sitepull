@@ -14,10 +14,16 @@ import type { BrowserContext, Page, Request, Response } from 'playwright';
 import { abortableDelay, throwIfAborted } from './async.js';
 import { SitepullError } from './errors.js';
 import {
+  isNonRetryableHttpClientError,
+  isRetryableHttpStatus,
+  parseRetryAfterMs,
+} from './page-retry.js';
+import {
   isPngPixelCountWithinLimit,
   MAX_SCREENSHOT_DECODED_PIXELS,
   readPngIhdrDimensions,
 } from './png.js';
+import type { ResourceBodyReader } from './resource-budget.js';
 
 const STYLE_PROPERTIES = [
   'display',
@@ -118,8 +124,8 @@ export interface CapturePageInput {
   readonly maxElements: number;
   readonly screenshotsDirectory: string;
   readonly screenshotRelativeDirectory: string;
+  readonly resourceBudget: ResourceBodyReader;
   readonly signal?: AbortSignal;
-  readonly onResource: (payload: CapturedResourcePayload) => Promise<void>;
 }
 
 export interface RawPageLink {
@@ -144,6 +150,8 @@ export interface CapturedPageData {
   readonly cssVariables: Readonly<Record<string, readonly string[]>>;
   readonly breakpoints: readonly string[];
   readonly inaccessibleStylesheets: number;
+  /** Browser-delivered bodies from this successful attempt, not yet committed globally. */
+  readonly resources: readonly CapturedResourcePayload[];
   readonly durationMs: number;
 }
 
@@ -499,6 +507,7 @@ export async function capturePage(input: CapturePageInput): Promise<CapturedPage
 
   const requestStarted = new Map<Request, number>();
   const networkEntries: NetworkEntry[] = [];
+  const resourcesToCommit: CapturedResourcePayload[] = [];
   const responseTasks = new Set<Promise<void>>();
   let outstandingRequests = 0;
 
@@ -532,18 +541,23 @@ export async function capturePage(input: CapturePageInput): Promise<CapturedPage
       const headers = await response.allHeaders();
       const contentType = headers['content-type']?.split(';')[0]?.trim() ?? null;
       const declaredLength = Number.parseInt(headers['content-length'] ?? '', 10);
+      const retryableMainDocument =
+        request.isNavigationRequest() &&
+        request.frame() === page.mainFrame() &&
+        isRetryableHttpStatus(response.status());
       let body: Buffer | null = null;
       let failureReason: string | undefined;
-      if (Number.isFinite(declaredLength) && declaredLength > 25 * 1024 * 1024) {
-        failureReason = 'Resource exceeds the 25 MB per-resource capture limit.';
+      if (retryableMainDocument) {
+        failureReason = `Retryable main document response HTTP ${response.status()} is recorded as attempt evidence.`;
       } else {
-        try {
-          const candidate = await response.body();
-          if (candidate.byteLength <= 25 * 1024 * 1024) body = candidate;
-          else failureReason = 'Resource exceeds the 25 MB per-resource capture limit.';
-        } catch (error) {
-          failureReason = error instanceof Error ? error.message : 'Response body was unavailable.';
-        }
+        const bodyResult = await input.resourceBudget.read({
+          declaredBytes:
+            Number.isSafeInteger(declaredLength) && declaredLength >= 0 ? declaredLength : null,
+          read: () => response.body(),
+          ...(input.signal === undefined ? {} : { signal: input.signal }),
+        });
+        body = bodyResult.body;
+        failureReason = bodyResult.failureReason;
       }
       const started = requestStarted.get(request) ?? Date.now();
       networkEntries.push({
@@ -558,19 +572,30 @@ export async function capturePage(input: CapturePageInput): Promise<CapturedPage
         failed: !response.ok() && response.status() >= 400,
         failureText: response.ok() || response.status() < 400 ? null : `HTTP ${response.status()}`,
       });
-      await input.onResource({
-        originalUrl: request.url(),
-        finalUrl: response.url(),
-        status: response.status(),
-        contentType,
-        headers,
-        body,
-        referencedByPage: input.url,
-        ...(failureReason === undefined ? {} : { failureReason }),
-      });
+      if (!retryableMainDocument) {
+        resourcesToCommit.push({
+          originalUrl: request.url(),
+          finalUrl: response.url(),
+          status: response.status(),
+          contentType,
+          headers,
+          body,
+          referencedByPage: input.url,
+          ...(failureReason === undefined ? {} : { failureReason }),
+        });
+      }
     })();
     responseTasks.add(task);
-    void task.finally(() => responseTasks.delete(task));
+    void task.then(
+      () => responseTasks.delete(task),
+      () => responseTasks.delete(task),
+    );
+  };
+
+  const drainResponseTasks = async (): Promise<void> => {
+    while (responseTasks.size > 0) {
+      await Promise.allSettled([...responseTasks]);
+    }
   };
 
   page.on('request', onRequest);
@@ -590,21 +615,59 @@ export async function capturePage(input: CapturePageInput): Promise<CapturedPage
         stage: 'rendering',
       });
     }
-    const navigationType = (await navigation.allHeaders())['content-type'] ?? '';
-    if (!navigationType.toLowerCase().includes('text/html')) {
+    const navigationHeaders = await navigation.allHeaders();
+    const navigationType = navigationHeaders['content-type'] ?? '';
+    const navigationStatus = navigation.status();
+    if (isRetryableHttpStatus(navigationStatus)) {
+      const retryAfter = navigationHeaders['retry-after'];
+      const retryAfterMs = parseRetryAfterMs(retryAfter);
       throw new SitepullError({
-        code: 'NO_HTML_DOCUMENT',
-        message: `The URL returned ${navigationType || 'a non-HTML response'}.`,
+        code: 'HTTP_RETRYABLE_STATUS',
+        message: `The site returned retryable HTTP ${navigationStatus} for ${input.url}.`,
         stage: 'rendering',
-        details: { status: navigation.status(), contentType: navigationType },
+        retryable: true,
+        details: {
+          status: navigationStatus,
+          ...(retryAfter === undefined ? {} : { retryAfter }),
+          ...(retryAfterMs === null ? {} : { retryAfterMs }),
+        },
       });
     }
-    if (navigation.status() === 403) {
+    if (navigationStatus === 403) {
       throw new SitepullError({
         code: 'HTTP_FORBIDDEN',
         message: `The site returned HTTP 403 for ${input.url}.`,
         stage: 'rendering',
         retryable: false,
+        details: {
+          status: navigationStatus,
+          statusText: navigation.statusText(),
+          url: input.url,
+          finalUrl: navigation.url(),
+        },
+      });
+    }
+    if (isNonRetryableHttpClientError(navigationStatus)) {
+      const statusText = navigation.statusText().trim();
+      throw new SitepullError({
+        code: 'HTTP_CLIENT_ERROR',
+        message: `The site returned HTTP ${navigationStatus}${statusText === '' ? '' : ` ${statusText}`} for ${input.url}.`,
+        stage: 'rendering',
+        retryable: false,
+        details: {
+          status: navigationStatus,
+          statusText,
+          url: input.url,
+          finalUrl: navigation.url(),
+        },
+      });
+    }
+    if (!navigationType.toLowerCase().includes('text/html')) {
+      throw new SitepullError({
+        code: 'NO_HTML_DOCUMENT',
+        message: `The URL returned ${navigationType || 'a non-HTML response'}.`,
+        stage: 'rendering',
+        details: { status: navigationStatus, contentType: navigationType },
       });
     }
 
@@ -645,12 +708,14 @@ export async function capturePage(input: CapturePageInput): Promise<CapturedPage
         fullPageByteSize: await fileByteSize(fullPath),
       });
     }
-    await Promise.allSettled([...responseTasks]);
+    page.off('response', onResponse);
+    await drainResponseTasks();
+    throwIfAborted(input.signal);
 
     return {
       url: input.url,
       finalUrl: page.url(),
-      status: navigation.status(),
+      status: navigationStatus,
       contentType: navigationType,
       title: snapshot.title,
       renderedHtml: snapshot.renderedHtml,
@@ -677,6 +742,7 @@ export async function capturePage(input: CapturePageInput): Promise<CapturedPage
       cssVariables: snapshot.cssVariables,
       breakpoints: snapshot.breakpoints,
       inaccessibleStylesheets: snapshot.inaccessibleStylesheets,
+      resources: resourcesToCommit,
       durationMs: Date.now() - startedAt,
     };
   } catch (error) {
@@ -726,5 +792,6 @@ export async function capturePage(input: CapturePageInput): Promise<CapturedPage
   } finally {
     page.removeAllListeners();
     await page.close().catch(() => undefined);
+    await drainResponseTasks();
   }
 }

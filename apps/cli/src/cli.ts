@@ -1,11 +1,12 @@
 import { format } from 'node:util';
 
+import { SITEPULL_VERSION } from '@sitepull/contracts';
 import cac, { type CAC } from 'cac';
 
 import { UsageError, parsePullCommand, type RawPullOptions } from './options.js';
 import { executePull, DEFAULT_PULL_DEPENDENCIES, type PullDependencies } from './pull.js';
 
-export const SITEPULL_VERSION = '0.1.0';
+export { SITEPULL_VERSION } from '@sitepull/contracts';
 
 export interface CliIo {
   readonly writeStdout: (text: string) => void;

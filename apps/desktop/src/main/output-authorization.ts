@@ -32,8 +32,20 @@ export class OutputAuthorization {
     this.#authorized.add(defaultDirectory);
   }
 
-  static async create(defaultDirectory: string): Promise<OutputAuthorization> {
-    return new OutputAuthorization(await canonicalDirectory(defaultDirectory, true));
+  static async create(
+    defaultDirectory: string,
+    persistedDirectories: readonly string[] = [],
+  ): Promise<OutputAuthorization> {
+    const authorization = new OutputAuthorization(await canonicalDirectory(defaultDirectory, true));
+    for (const directory of new Set(persistedDirectories)) {
+      try {
+        authorization.#authorized.add(await canonicalDirectory(directory, false));
+      } catch {
+        // A moved or unavailable persisted output is surfaced when the user
+        // attempts to capture again; it must not prevent the app from opening.
+      }
+    }
+    return authorization;
   }
 
   async select(window: BrowserWindow): Promise<OutputDirectorySelectionResult> {

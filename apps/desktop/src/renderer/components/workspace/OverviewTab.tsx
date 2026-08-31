@@ -1,6 +1,16 @@
 import type { CaptureManifest, ScreenshotManifest } from '@sitepull/contracts';
-import { Box, Braces, FileArchive, Globe2, Layers3, Type } from 'lucide-react';
+import {
+  AlertTriangle,
+  Box,
+  Braces,
+  CheckCircle2,
+  FileArchive,
+  Globe2,
+  Layers3,
+  Type,
+} from 'lucide-react';
 
+import { captureHealthSummary } from '../../lib/capture-health.js';
 import { captureFileUrl, formatBytes, formatCount, safeCssColor } from '../../lib/utils.js';
 import { ArtifactImage, ConfidenceBar, SectionHeading, WorkspacePanel } from './shared.js';
 
@@ -16,6 +26,7 @@ export function OverviewTab({ manifest }: { readonly manifest: CaptureManifest }
   const topTypography = manifest.design.typography.slice(0, 4);
   const components = manifest.design.components.slice(0, 5);
   const routes = manifest.pages.slice(0, 10);
+  const health = captureHealthSummary(manifest);
 
   return (
     <div className="grid gap-5 pb-8">
@@ -49,6 +60,124 @@ export function OverviewTab({ manifest }: { readonly manifest: CaptureManifest }
           className="col-span-2 lg:col-span-1"
         />
       </div>
+
+      <WorkspacePanel className="p-4">
+        <SectionHeading
+          eyebrow="Evidence health"
+          title={
+            health.status === 'complete' ? 'Capture is internally complete' : 'Review capture gaps'
+          }
+          aside={
+            <span
+              className={
+                health.status === 'complete'
+                  ? 'inline-flex items-center gap-1.5 text-[10px] text-emerald-400/70'
+                  : 'inline-flex items-center gap-1.5 text-[10px] text-amber-300/75'
+              }
+            >
+              {health.status === 'complete' ? (
+                <CheckCircle2 className="size-3.5" />
+              ) : (
+                <AlertTriangle className="size-3.5" />
+              )}
+              {health.status === 'complete' ? 'No recorded gaps' : 'Partial evidence'}
+            </span>
+          }
+        />
+        <div className="mt-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+          <HealthMetric
+            value={`${health.capturedPages} / ${health.attemptedPages}`}
+            label="Pages captured"
+            warning={health.failedPages > 0}
+          />
+          <HealthMetric
+            value={`${health.capturedResources} / ${health.totalResources}`}
+            label="Resources captured"
+            warning={health.unavailableResources > 0 || health.httpErrorResources > 0}
+          />
+          <HealthMetric value={String(health.recoveredPages)} label="Pages recovered by retry" />
+          <HealthMetric value={String(health.boundedUrlDecisions)} label="Bounded URL decisions" />
+          <HealthMetric
+            value={String(health.truncatedElementPages)}
+            label="Pages at element limit"
+            warning={health.truncatedElementPages > 0}
+          />
+          <HealthMetric
+            value={String(health.inaccessibleStylesheets)}
+            label="Stylesheets opaque"
+            warning={health.inaccessibleStylesheets > 0}
+          />
+          <HealthMetric
+            value={String(health.httpErrorResources)}
+            label="Resource HTTP errors"
+            warning={health.httpErrorResources > 0}
+          />
+        </div>
+        {health.status === 'review' ? (
+          <div className="mt-3 rounded-[8px] border border-amber-300/[0.1] bg-amber-300/[0.035] px-3 py-2 text-[10px] leading-5 text-amber-100/55">
+            {health.failedPages > 0 ? (
+              <p>
+                Failed routes: <span className="font-mono">{health.failedRoutes.join(', ')}</span>
+              </p>
+            ) : null}
+            {health.unavailableResources > 0 ? (
+              <p>
+                {health.unavailableResources} resource
+                {health.unavailableResources === 1 ? ' was' : 's were'} unavailable or excluded by a
+                safety limit. Inspect Assets and Logs before treating this pack as complete.
+              </p>
+            ) : null}
+            {health.httpErrorResources > 0 ? (
+              <p>
+                {health.httpErrorResources} resource
+                {health.httpErrorResources === 1 ? ' returned' : 's returned'} HTTP error status
+                {health.httpErrorResources === 1 ? '' : 'es'}; saved error bodies are not valid
+                design evidence. Examples:{' '}
+                <span className="font-mono">
+                  {health.httpErrorResourceUrls.slice(0, 3).join(', ')}
+                </span>
+                .
+              </p>
+            ) : null}
+            {health.unreportedExtractionPages > 0 ? (
+              <p>
+                Element-limit or stylesheet-access telemetry is unavailable for{' '}
+                {health.unreportedExtractionPages} legacy page record
+                {health.unreportedExtractionPages === 1 ? '' : 's'}:{' '}
+                <span className="font-mono">{health.unreportedExtractionRoutes.join(', ')}</span>.
+                Recapture those routes before treating their extraction evidence as complete.
+              </p>
+            ) : null}
+            {health.truncatedElementPages > 0 ? (
+              <p>
+                The visible-element inventory reached the configured{' '}
+                {formatCount(manifest.config.maxElementsPerPage)}-element per-page limit on{' '}
+                {health.truncatedElementPages} page
+                {health.truncatedElementPages === 1 ? '' : 's'}:{' '}
+                <span className="font-mono">{health.truncatedElementRoutes.join(', ')}</span>.
+                Elements beyond that bound are not represented in the element or design evidence.
+              </p>
+            ) : null}
+            {health.inaccessibleStylesheets > 0 ? (
+              <p>
+                {health.inaccessibleStylesheets} stylesheet rule list
+                {health.inaccessibleStylesheets === 1 ? ' was' : 's were'} inaccessible across{' '}
+                {health.inaccessibleStylesheetPages} page
+                {health.inaccessibleStylesheetPages === 1 ? '' : 's'}:{' '}
+                <span className="font-mono">{health.inaccessibleStylesheetRoutes.join(', ')}</span>.
+                Computed styles for captured elements remain available, but CSS variables and media
+                rules may be incomplete.
+              </p>
+            ) : null}
+          </div>
+        ) : (
+          <p className="mt-3 text-[10px] leading-5 text-zinc-650">
+            Sitepull recorded no failed pages, unavailable or HTTP-error resources, truncated
+            visible-element inventories, or inaccessible stylesheet rule lists. URL skips still
+            reflect the configured depth, origin, duplicate, and page-count boundaries.
+          </p>
+        )}
+      </WorkspacePanel>
 
       <div className="grid gap-5 xl:grid-cols-[minmax(0,1.45fr)_minmax(280px,.55fr)]">
         <WorkspacePanel className="overflow-hidden">
@@ -216,6 +345,31 @@ export function OverviewTab({ manifest }: { readonly manifest: CaptureManifest }
           </div>
         </WorkspacePanel>
       </div>
+    </div>
+  );
+}
+
+function HealthMetric({
+  value,
+  label,
+  warning = false,
+}: {
+  readonly value: string;
+  readonly label: string;
+  readonly warning?: boolean;
+}) {
+  return (
+    <div className="rounded-[8px] border border-white/[0.055] bg-black/10 px-3 py-2.5">
+      <p
+        className={
+          warning
+            ? 'text-[14px] font-medium text-amber-200/80'
+            : 'text-[14px] font-medium text-zinc-300'
+        }
+      >
+        {value}
+      </p>
+      <p className="mt-0.5 text-[9px] uppercase tracking-[0.08em] text-zinc-650">{label}</p>
     </div>
   );
 }

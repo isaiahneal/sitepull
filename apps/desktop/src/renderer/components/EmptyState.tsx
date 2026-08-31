@@ -1,5 +1,11 @@
 import { Collapsible } from '@base-ui/react/collapsible';
-import { DEFAULT_CRAWL_CONFIG, VIEWPORT_PRESETS, type CrawlConfig } from '@sitepull/contracts';
+import {
+  DEFAULT_CRAWL_CONFIG,
+  VIEWPORT_PRESETS,
+  type CaptureRecipe,
+  type CrawlConfig,
+  type RecentCapture,
+} from '@sitepull/contracts';
 import {
   ArrowRight,
   Check,
@@ -9,13 +15,13 @@ import {
   Globe2,
   History,
   RotateCw,
+  Search,
   Settings2,
   ShieldCheck,
 } from 'lucide-react';
 import type { FormEvent } from 'react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 
-import type { RecentCapture } from '@sitepull/contracts';
 import type { SitepullController } from '../hooks/use-sitepull.js';
 import { cn, formatBytes, normalizeUrlRequestInput, relativeTime } from '../lib/utils.js';
 import { Button } from './ui/button.js';
@@ -25,22 +31,58 @@ interface EmptyStateProps {
   readonly controller: SitepullController;
 }
 
-function freshConfig(): CrawlConfig {
+function freshConfig(source: CrawlConfig = DEFAULT_CRAWL_CONFIG): CrawlConfig {
   return {
-    ...DEFAULT_CRAWL_CONFIG,
-    viewports: DEFAULT_CRAWL_CONFIG.viewports.map((viewport) => ({ ...viewport })),
+    ...source,
+    viewports: source.viewports.map((viewport) => ({ ...viewport })),
   };
 }
 
 export function EmptyState({ controller }: EmptyStateProps) {
-  const { model, startCapture, openRecent, selectOutputDirectory, refreshRecents } = controller;
-  const [url, setUrl] = useState('');
-  const [outputDirectory, setOutputDirectory] = useState<string | undefined>();
-  const [config, setConfig] = useState<CrawlConfig>(freshConfig);
+  const {
+    model,
+    startCapture,
+    openRecent,
+    prepareCaptureAgain,
+    selectOutputDirectory,
+    refreshRecents,
+  } = controller;
+  const initialRecipe = model.draftRecipe ?? model.lastUsedRecipe;
+  const [url, setUrl] = useState(initialRecipe?.url ?? '');
+  const [outputDirectory, setOutputDirectory] = useState<string | undefined>(
+    initialRecipe?.outputDirectory,
+  );
+  const [allowHttpFallback, setAllowHttpFallback] = useState<boolean | undefined>(
+    initialRecipe?.allowHttpFallback,
+  );
+  const [config, setConfig] = useState<CrawlConfig>(() => freshConfig(initialRecipe?.config));
   const [urlError, setUrlError] = useState<string | null>(null);
   const [settingsError, setSettingsError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [recentQuery, setRecentQuery] = useState('');
   const formRef = useRef<HTMLFormElement>(null);
+  const urlInputRef = useRef<HTMLInputElement>(null);
+  const appliedRecipeRef = useRef<CaptureRecipe | null>(initialRecipe);
+  const formTouchedRef = useRef(false);
+
+  const recipeToApply = model.draftRecipe ?? model.lastUsedRecipe;
+  useEffect(() => {
+    if (recipeToApply === null || appliedRecipeRef.current === recipeToApply) return;
+    if (model.draftRecipe === null && formTouchedRef.current) return;
+
+    appliedRecipeRef.current = recipeToApply;
+    formTouchedRef.current = false;
+    setUrl(recipeToApply.url);
+    setOutputDirectory(recipeToApply.outputDirectory);
+    setAllowHttpFallback(recipeToApply.allowHttpFallback);
+    setConfig(freshConfig(recipeToApply.config));
+    setUrlError(null);
+    setSettingsError(null);
+    if (model.draftRecipe !== null) {
+      urlInputRef.current?.focus();
+      urlInputRef.current?.select();
+    }
+  }, [model.draftRecipe, recipeToApply]);
 
   const viewportLabel = useMemo(
     () =>
@@ -49,6 +91,15 @@ export function EmptyState({ controller }: EmptyStateProps) {
         .join(' + '),
     [config.viewports],
   );
+
+  const filteredRecents = useMemo(() => {
+    const needle = recentQuery.trim().toLowerCase();
+    if (needle === '') return model.recents;
+    return model.recents.filter(
+      (recent) =>
+        recent.hostname.toLowerCase().includes(needle) || recent.url.toLowerCase().includes(needle),
+    );
+  }, [model.recents, recentQuery]);
 
   useEffect(() => {
     const handleShortcut = (event: KeyboardEvent) => {
@@ -69,7 +120,7 @@ export function EmptyState({ controller }: EmptyStateProps) {
       setSubmitting(true);
       await startCapture({
         url: normalizedInput.url,
-        allowHttpFallback: normalizedInput.protocolInferred,
+        allowHttpFallback: allowHttpFallback ?? normalizedInput.protocolInferred,
         config,
         ...(outputDirectory ? { outputDirectory } : {}),
       });
@@ -87,7 +138,10 @@ export function EmptyState({ controller }: EmptyStateProps) {
         setSettingsError(response.error.message);
         return;
       }
-      if (!response.data.cancelled && response.data.path) setOutputDirectory(response.data.path);
+      if (!response.data.cancelled && response.data.path) {
+        formTouchedRef.current = true;
+        setOutputDirectory(response.data.path);
+      }
     } catch (error) {
       setSettingsError(
         error instanceof Error ? error.message : 'The output folder could not be selected.',
@@ -124,10 +178,13 @@ export function EmptyState({ controller }: EmptyStateProps) {
               <div className="flex items-center gap-2">
                 <Globe2 className="ml-3 size-[17px] shrink-0 text-zinc-600 transition-colors group-focus-within:text-blue-400" />
                 <input
+                  ref={urlInputRef}
                   autoFocus
                   value={url}
                   onChange={(event) => {
+                    formTouchedRef.current = true;
                     setUrl(event.target.value);
+                    setAllowHttpFallback(undefined);
                     if (urlError) setUrlError(null);
                   }}
                   onKeyDown={(event) => {
@@ -196,9 +253,13 @@ export function EmptyState({ controller }: EmptyStateProps) {
                   config={config}
                   outputDirectory={outputDirectory}
                   outputError={settingsError}
-                  onConfigChange={setConfig}
+                  onConfigChange={(nextConfig) => {
+                    formTouchedRef.current = true;
+                    setConfig(nextConfig);
+                  }}
                   onChooseOutput={() => void chooseOutput()}
                   onClearOutput={() => {
+                    formTouchedRef.current = true;
                     setOutputDirectory(undefined);
                     setSettingsError(null);
                   }}
@@ -212,7 +273,7 @@ export function EmptyState({ controller }: EmptyStateProps) {
           aria-labelledby="recent-heading"
           className="mx-auto mt-[clamp(58px,10vh,92px)] w-full max-w-[760px]"
         >
-          <div className="mb-3 flex items-center justify-between px-1">
+          <div className="mb-3 flex flex-wrap items-center gap-2 px-1">
             <div className="flex items-center gap-2">
               <History className="size-3.5 text-zinc-600" />
               <h2
@@ -222,26 +283,48 @@ export function EmptyState({ controller }: EmptyStateProps) {
                 Recent captures
               </h2>
             </div>
-            <button
-              type="button"
-              onClick={() => void refreshRecents()}
-              className="rounded p-1.5 text-zinc-600 outline-none transition-colors hover:bg-white/[0.05] hover:text-zinc-300 focus-visible:ring-2 focus-visible:ring-blue-400/50"
-              aria-label="Refresh recent captures"
-              title="Refresh"
-            >
-              <RotateCw className="size-3.5" />
-            </button>
+            <div className="ml-auto flex items-center gap-1.5">
+              {model.recents.length > 0 ? (
+                <div className="relative">
+                  <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3 -translate-y-1/2 text-zinc-650" />
+                  <Input
+                    value={recentQuery}
+                    onChange={(event) => setRecentQuery(event.target.value)}
+                    placeholder="Search history"
+                    aria-label="Search capture history"
+                    className="h-7 w-[190px] pl-7 text-[10px]"
+                  />
+                </div>
+              ) : null}
+              <button
+                type="button"
+                onClick={() => void refreshRecents()}
+                className="rounded p-1.5 text-zinc-600 outline-none transition-colors hover:bg-white/[0.05] hover:text-zinc-300 focus-visible:ring-2 focus-visible:ring-blue-400/50"
+                aria-label="Refresh recent captures"
+                title="Refresh"
+              >
+                <RotateCw className="size-3.5" />
+              </button>
+            </div>
           </div>
 
-          <div className="overflow-hidden rounded-[11px] border border-white/[0.07] bg-white/[0.018]">
+          <div className="max-h-[420px] overflow-y-auto rounded-[11px] border border-white/[0.07] bg-white/[0.018]">
             {model.recentsLoading ? (
               <RecentSkeleton />
+            ) : filteredRecents.length > 0 ? (
+              filteredRecents.map((recent) => (
+                <RecentRow
+                  key={recent.captureId}
+                  recent={recent}
+                  onOpen={openRecent}
+                  onCaptureAgain={prepareCaptureAgain}
+                />
+              ))
             ) : model.recents.length > 0 ? (
-              model.recents
-                .slice(0, 8)
-                .map((recent) => (
-                  <RecentRow key={recent.captureId} recent={recent} onOpen={openRecent} />
-                ))
+              <div className="flex min-h-[96px] flex-col items-center justify-center px-5 text-center">
+                <Search className="mb-2 size-4 text-zinc-700" />
+                <p className="text-[12px] text-zinc-500">No captures match this search.</p>
+              </div>
             ) : (
               <div className="flex min-h-[112px] flex-col items-center justify-center px-5 text-center">
                 <Clock3 className="mb-2 size-4 text-zinc-700" />
@@ -251,6 +334,11 @@ export function EmptyState({ controller }: EmptyStateProps) {
               </div>
             )}
           </div>
+          {!model.recentsLoading && model.recents.length > 0 ? (
+            <p className="mt-2 px-1 text-[10px] tabular-nums text-zinc-700">
+              {filteredRecents.length} of {model.recents.length} captures
+            </p>
+          ) : null}
           {model.recentsError ? (
             <p className="mt-2 px-1 text-[11px] text-amber-400/80">{model.recentsError}</p>
           ) : null}
@@ -521,44 +609,65 @@ function ToggleRow({
 function RecentRow({
   recent,
   onOpen,
+  onCaptureAgain,
 }: {
   readonly recent: RecentCapture;
   readonly onOpen: (captureId: string) => Promise<void>;
+  readonly onCaptureAgain: (recipe: CaptureRecipe) => void;
 }) {
   const isMissing = recent.availability === 'missing';
   return (
-    <button
-      type="button"
-      disabled={isMissing}
-      onClick={() => void onOpen(recent.captureId)}
-      className="group flex w-full items-center gap-3 border-b border-white/[0.055] px-3.5 py-3 text-left outline-none transition-colors last:border-b-0 hover:bg-white/[0.035] focus-visible:bg-white/[0.04] focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-400/50 disabled:cursor-default disabled:opacity-55"
-    >
-      <span className="grid size-8 shrink-0 place-items-center rounded-[8px] border border-white/[0.08] bg-black/20 text-[11px] font-semibold uppercase text-zinc-400">
-        {recent.hostname.charAt(0)}
-      </span>
-      <span className="min-w-0 flex-1">
-        <span className="flex items-center gap-2">
-          <span className="truncate text-[12px] font-medium text-zinc-300 transition-colors group-hover:text-zinc-100">
-            {recent.hostname}
-          </span>
-          {isMissing ? (
-            <span className="shrink-0 rounded border border-amber-400/15 bg-amber-400/[0.07] px-1.5 py-0.5 text-[9px] text-amber-300/75">
-              Folder missing
-            </span>
-          ) : null}
+    <div className="group flex items-stretch border-b border-white/[0.055] last:border-b-0 hover:bg-white/[0.035]">
+      <button
+        type="button"
+        disabled={isMissing}
+        onClick={() => void onOpen(recent.captureId)}
+        className="flex min-w-0 flex-1 items-center gap-3 px-3.5 py-3 text-left outline-none transition-colors focus-visible:bg-white/[0.04] focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-400/50 disabled:cursor-default disabled:opacity-55"
+      >
+        <span className="grid size-8 shrink-0 place-items-center rounded-[8px] border border-white/[0.08] bg-black/20 text-[11px] font-semibold uppercase text-zinc-400">
+          {recent.hostname.charAt(0)}
         </span>
-        <span className="mt-0.5 block truncate text-[10px] text-zinc-650">{recent.url}</span>
-      </span>
-      <span className="hidden items-center gap-3 text-[10px] text-zinc-600 sm:flex">
-        <span>{recent.pageCount} pages</span>
-        <span>{recent.assetCount} assets</span>
-        <span className="w-12 text-right">{formatBytes(recent.byteSize, true)}</span>
-      </span>
-      <span className="w-[62px] shrink-0 text-right text-[10px] text-zinc-600">
-        {relativeTime(recent.capturedAt)}
-      </span>
-      <ChevronRight className="size-3.5 shrink-0 text-zinc-700 transition-transform group-hover:translate-x-0.5 group-hover:text-zinc-400" />
-    </button>
+        <span className="min-w-0 flex-1">
+          <span className="flex items-center gap-2">
+            <span className="truncate text-[12px] font-medium text-zinc-300 transition-colors group-hover:text-zinc-100">
+              {recent.hostname}
+            </span>
+            {isMissing ? (
+              <span className="shrink-0 rounded border border-amber-400/15 bg-amber-400/[0.07] px-1.5 py-0.5 text-[9px] text-amber-300/75">
+                Folder missing
+              </span>
+            ) : null}
+          </span>
+          <span className="mt-0.5 block truncate text-[10px] text-zinc-650">{recent.url}</span>
+        </span>
+        <span className="hidden items-center gap-3 text-[10px] text-zinc-600 sm:flex">
+          <span>{recent.pageCount} pages</span>
+          <span>{recent.assetCount} assets</span>
+          <span className="w-12 text-right">{formatBytes(recent.byteSize, true)}</span>
+        </span>
+        <span className="w-[62px] shrink-0 text-right text-[10px] text-zinc-600">
+          {relativeTime(recent.capturedAt)}
+        </span>
+        <ChevronRight className="size-3.5 shrink-0 text-zinc-700 transition-transform group-hover:translate-x-0.5 group-hover:text-zinc-400" />
+      </button>
+      <button
+        type="button"
+        disabled={recent.recipe === null}
+        onClick={() => {
+          if (recent.recipe !== null) onCaptureAgain(recent.recipe);
+        }}
+        className="m-2 ml-0 flex shrink-0 items-center gap-1.5 rounded-[7px] border border-white/[0.07] px-2.5 text-[10px] font-medium text-zinc-500 outline-none transition-colors hover:border-white/[0.12] hover:bg-white/[0.05] hover:text-zinc-200 focus-visible:ring-2 focus-visible:ring-blue-400/50 disabled:cursor-not-allowed disabled:opacity-35"
+        aria-label={`Capture ${recent.hostname} again`}
+        title={
+          recent.recipe === null
+            ? 'This older capture does not include a saved recipe.'
+            : 'Preload this capture recipe'
+        }
+      >
+        <RotateCw className="size-3" />
+        <span>Capture Again</span>
+      </button>
+    </div>
   );
 }
 

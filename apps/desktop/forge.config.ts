@@ -6,7 +6,6 @@ import { promisify } from 'node:util';
 
 import { MakerDeb } from '@electron-forge/maker-deb';
 import { MakerDMG } from '@electron-forge/maker-dmg';
-import { MakerRpm } from '@electron-forge/maker-rpm';
 import { MakerSquirrel } from '@electron-forge/maker-squirrel';
 import { MakerZIP } from '@electron-forge/maker-zip';
 import { FusesPlugin } from '@electron-forge/plugin-fuses';
@@ -23,6 +22,74 @@ export const DESKTOP_ICON_PATHS = {
   linux: path.join(ASSETS_ROOT, 'sitepull.png'),
   win32: path.join(ASSETS_ROOT, 'sitepull.ico'),
 } as const;
+
+// Keep this aligned with Playwright's ubuntu24.04 WebKit runtime dependency
+// list. The DEB is explicitly built and clean-install tested for Ubuntu 24.04.
+export const PLAYWRIGHT_WEBKIT_UBUNTU_24_DEPENDENCIES = [
+  'gstreamer1.0-libav',
+  'gstreamer1.0-plugins-bad',
+  'gstreamer1.0-plugins-base',
+  'gstreamer1.0-plugins-good',
+  'libatomic1',
+  'libatk-bridge2.0-0t64',
+  'libatk1.0-0t64',
+  'libavif16',
+  'libcairo-gobject2',
+  'libcairo2',
+  'libdbus-1-3',
+  'libdrm2',
+  'libenchant-2-2',
+  'libepoxy0',
+  'libevent-2.1-7t64',
+  'libflite1',
+  'libfontconfig1',
+  'libfreetype6',
+  'libgbm1',
+  'libgdk-pixbuf-2.0-0',
+  'libgles2',
+  'libglib2.0-0t64',
+  'libgstreamer-gl1.0-0',
+  'libgstreamer-plugins-bad1.0-0',
+  'libgstreamer-plugins-base1.0-0',
+  'libgstreamer1.0-0',
+  'libgtk-4-1',
+  'libharfbuzz-icu0',
+  'libharfbuzz0b',
+  'libhyphen0',
+  'libicu74',
+  'libjpeg-turbo8',
+  'liblcms2-2',
+  'libmanette-0.2-0',
+  'libopus0',
+  'libpango-1.0-0',
+  'libpangocairo-1.0-0',
+  'libpng16-16t64',
+  'libsecret-1-0',
+  'libvpx9',
+  'libwayland-client0',
+  'libwayland-egl1',
+  'libwayland-server0',
+  'libwebp7',
+  'libwebpdemux2',
+  'libwoff1',
+  'libx11-6',
+  'libx264-164',
+  'libxkbcommon0',
+  'libxml2',
+  'libxslt1.1',
+] as const;
+
+export const PLAYWRIGHT_WEBKIT_FONT_RECOMMENDATIONS = [
+  'fonts-freefont-ttf',
+  'fonts-ipafont-gothic',
+  'fonts-liberation',
+  'fonts-noto-color-emoji',
+  'fonts-tlwg-loma-otf',
+  'fonts-unifont',
+  'fonts-wqy-zenhei',
+  'xfonts-cyrillic',
+  'xfonts-scalable',
+] as const;
 
 export function desktopIconForPlatform(platform: NodeJS.Platform): string {
   if (platform === 'darwin') return DESKTOP_ICON_PATHS.darwin;
@@ -215,26 +282,9 @@ const config: ForgeConfig = {
           bin: 'Sitepull',
           icon: DESKTOP_ICON_PATHS.linux,
           categories: ['Development', 'Utility'],
-        },
-      },
-      ['linux'],
-    ),
-    new MakerRpm(
-      {
-        options: {
-          name: 'sitepull',
-          productName: 'Sitepull',
-          genericName: 'Website Capture Utility',
-          description: 'Capture browser-delivered design references.',
-          productDescription:
-            'Sitepull captures inspectable local artifacts from browser-delivered websites.',
-          license: 'MIT',
-          group: 'Development/Tools',
-          homepage: 'https://github.com/isaiahneal/sitepull',
-          compressionLevel: 9,
-          bin: 'Sitepull',
-          icon: DESKTOP_ICON_PATHS.linux,
-          categories: ['Development', 'Utility'],
+          depends: [...PLAYWRIGHT_WEBKIT_UBUNTU_24_DEPENDENCIES],
+          recommends: [...PLAYWRIGHT_WEBKIT_FONT_RECOMMENDATIONS],
+          suggests: ['xvfb'],
         },
       },
       ['linux'],

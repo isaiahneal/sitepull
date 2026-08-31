@@ -4,6 +4,7 @@ import { dialog, ipcMain, type BrowserWindow, type IpcMainInvokeEvent } from 'el
 import {
   CancelCaptureResultSchema,
   CancelCapturePayloadSchema,
+  CaptureJobSnapshotResultSchema,
   CaptureManifestSchema,
   CopyAiContextPayloadSchema,
   EmptyPayloadSchema,
@@ -127,6 +128,13 @@ export function registerDesktopIpc(services: DesktopIpcServices): () => void {
         captureId: payload.captureId,
         cancellationRequested: services.jobs.cancel(payload.captureId, event.sender.id),
       }),
+  );
+
+  register(
+    SITEPULL_IPC_CHANNELS.getCaptureJob,
+    EmptyPayloadSchema,
+    CaptureJobSnapshotResultSchema,
+    (event) => Promise.resolve(services.jobs.snapshotForOwner(event.sender.id)),
   );
 
   register(

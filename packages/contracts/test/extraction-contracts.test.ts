@@ -6,9 +6,13 @@ import {
   ComponentCandidateSchema,
   ElementRecordSchema,
   ElementsManifestSchema,
+  MeasurementTokenSchema,
+  PageMetricsSchema,
   ProgressEventSchema,
+  PageCaptureAttemptSchema,
   ResourceManifestEntrySchema,
   SitepullErrorSchema,
+  SpacingTokenSchema,
 } from '../src/index.js';
 
 const capturedAt = '2026-08-30T12:00:00.000Z';
@@ -86,6 +90,23 @@ describe('resource contracts', () => {
     ).toBe(false);
   });
 
+  it('records a pre-response resource gap with the HTTP status sentinel', () => {
+    const gap = {
+      ...resource,
+      originalUrl: 'https://example.com/assets/app.js.map',
+      kind: 'source-map' as const,
+      contentType: null,
+      httpStatus: 0,
+      localPath: null,
+      byteSize: 0,
+      sha256: null,
+      captured: false,
+      failureReason: 'Capture resource budget is exhausted.',
+    };
+
+    expect(ResourceManifestEntrySchema.parse(gap)).toEqual(gap);
+  });
+
   it('checks aggregate resource counts', () => {
     expect(
       AssetManifestSchema.safeParse({
@@ -101,7 +122,143 @@ describe('resource contracts', () => {
   });
 });
 
+describe('page attempt evidence', () => {
+  const retryError = {
+    name: 'SitepullError' as const,
+    code: 'HTTP_RETRYABLE_STATUS' as const,
+    message: 'The site returned retryable HTTP 429.',
+    stage: 'rendering' as const,
+    retryable: true,
+    details: { status: 429, retryAfterMs: 1_000 },
+  };
+
+  it('requires structured errors and delays for retrying attempts', () => {
+    const attempt = {
+      attempt: 1,
+      startedAt: capturedAt,
+      completedAt: capturedAt,
+      durationMs: 20,
+      outcome: 'retrying' as const,
+      httpStatus: 429,
+      retryDelayMs: 1_000,
+      error: retryError,
+    };
+    expect(PageCaptureAttemptSchema.parse(attempt)).toEqual(attempt);
+    expect(
+      PageCaptureAttemptSchema.safeParse({ ...attempt, retryDelayMs: undefined }).success,
+    ).toBe(false);
+  });
+
+  it('does not attach failure evidence to captured attempts', () => {
+    expect(
+      PageCaptureAttemptSchema.safeParse({
+        attempt: 2,
+        startedAt: capturedAt,
+        completedAt: capturedAt,
+        durationMs: 1_200,
+        outcome: 'captured',
+        httpStatus: 200,
+        error: retryError,
+      }).success,
+    ).toBe(false);
+  });
+
+  it('accepts a structured, non-retryable HTTP client error', () => {
+    const error = {
+      name: 'SitepullError' as const,
+      code: 'HTTP_CLIENT_ERROR' as const,
+      message: 'The site returned HTTP 404 Not Found.',
+      stage: 'rendering' as const,
+      retryable: false,
+      details: {
+        status: 404,
+        statusText: 'Not Found',
+        url: 'https://example.com/missing',
+        finalUrl: 'https://example.com/missing',
+      },
+    };
+
+    expect(SitepullErrorSchema.parse(error)).toEqual(error);
+  });
+});
+
+describe('page extraction evidence', () => {
+  const metrics = {
+    visibleElements: 10_000,
+    discoveredLinks: 12,
+    networkRequests: 24,
+    capturedResources: 18,
+    byteSize: 1_024,
+    durationMs: 500,
+  };
+
+  it('persists bounded-element and stylesheet-access signals', () => {
+    expect(
+      PageMetricsSchema.parse({
+        ...metrics,
+        elementsTruncated: true,
+        inaccessibleStylesheets: 2,
+      }),
+    ).toMatchObject({ elementsTruncated: true, inaccessibleStylesheets: 2 });
+  });
+
+  it('keeps v0.1 page metrics readable without inventing evidence signals', () => {
+    const parsed = PageMetricsSchema.parse(metrics);
+
+    expect(parsed.elementsTruncated).toBeUndefined();
+    expect(parsed.inaccessibleStylesheets).toBeUndefined();
+  });
+
+  it('rejects a negative inaccessible stylesheet count', () => {
+    expect(PageMetricsSchema.safeParse({ ...metrics, inaccessibleStylesheets: -1 }).success).toBe(
+      false,
+    );
+  });
+});
+
 describe('design and live-progress contracts', () => {
+  it('allows signed margins while keeping other measurement domains nonnegative', () => {
+    const negativeMargin = {
+      value: '-21.265625px',
+      pixels: -21.265625,
+      occurrences: 2,
+      contexts: ['margin', 'margin-top'],
+      routes: ['/', '/about'],
+    };
+
+    expect(SpacingTokenSchema.parse(negativeMargin)).toEqual(negativeMargin);
+    expect(
+      SpacingTokenSchema.safeParse({ ...negativeMargin, contexts: ['padding-top'] }).success,
+    ).toBe(false);
+    expect(
+      MeasurementTokenSchema.safeParse({ ...negativeMargin, contexts: ['border-radius'] }).success,
+    ).toBe(false);
+    expect(
+      SpacingTokenSchema.safeParse({
+        ...negativeMargin,
+        value: '-1rem',
+        pixels: null,
+        contexts: ['gap'],
+      }).success,
+    ).toBe(false);
+    expect(
+      MeasurementTokenSchema.safeParse({
+        ...negativeMargin,
+        value: '-1rem',
+        pixels: null,
+        contexts: ['border-radius'],
+      }).success,
+    ).toBe(false);
+    expect(
+      SpacingTokenSchema.safeParse({
+        ...negativeMargin,
+        value: '-1rem',
+        pixels: null,
+        contexts: ['margin-left'],
+      }).success,
+    ).toBe(true);
+  });
+
   it('keeps semantic color labels explicitly evidence-qualified', () => {
     expect(
       ColorTokenSchema.safeParse({

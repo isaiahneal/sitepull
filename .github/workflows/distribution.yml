@@ -13,8 +13,38 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  quality:
+    name: Quality gate
+    uses: ./.github/workflows/quality.yml
+
+  release-metadata:
+    name: Release metadata gate
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Verify tag, package version, and release notes agree
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          set -euo pipefail
+          package_version="$(node -p "JSON.parse(require('fs').readFileSync('package.json', 'utf8')).version")"
+          expected_tag="v${package_version}"
+          if [[ "${GITHUB_REF_NAME}" != "${expected_tag}" ]]; then
+            echo "Release tag ${GITHUB_REF_NAME} does not match package version ${package_version}" >&2
+            exit 1
+          fi
+
+          notes_file="docs/release-notes/${GITHUB_REF_NAME}.md"
+          if [[ ! -s "${notes_file}" ]]; then
+            echo "Required release notes are missing or empty: ${notes_file}" >&2
+            exit 1
+          fi
+
   make:
     name: ${{ matrix.name }}
+    needs: [quality, release-metadata]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 75
     strategy:
@@ -36,10 +66,10 @@ jobs:
 
     steps:
       - name: Check out source
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
       - name: Install pnpm and Node.js
-        uses: pnpm/setup@v2
+        uses: pnpm/setup@84cb39b217b10273981911c288cd62326dc7c6d2 # v2
         with:
           version: 11.24.0
           runtime: node@24.20.0
@@ -48,16 +78,44 @@ jobs:
 
       - name: Install Linux maker prerequisites
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install --yes fakeroot rpm
+        run: sudo apt-get update && sudo apt-get install --yes fakeroot xvfb
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Install Linux WebKit system dependencies
+        if: runner.os == 'Linux'
+        run: pnpm exec playwright install-deps webkit
+
       - name: Build native distributions
         run: pnpm run ${{ matrix.command }}
 
+      - name: Smoke-test packaged application
+        run: pnpm --filter @sitepull/desktop smoke:packaged
+
+      - name: Clean-install and probe the Ubuntu 24.04 DEB
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            --volume "${PWD}/apps/desktop/out/make:/artifacts:ro" \
+            ubuntu:24.04@sha256:1e0a86e57d247923571b75e0aaf48a1449cf8c543d51fb3e07a4a7d7bfa79316 \
+            bash -euxo pipefail -c '
+              export DEBIAN_FRONTEND=noninteractive
+              apt-get update
+              apt-get install --yes xvfb
+              deb="$(find /artifacts -type f -name "*.deb" -print -quit)"
+              test -n "${deb}"
+              apt-get install --yes "${deb}"
+              useradd --create-home sitepull-smoke
+              runuser -u sitepull-smoke -- env \
+                SITEPULL_PACKAGED_RUNTIME_SMOKE=probe-only \
+                timeout 45s xvfb-run --auto-servernum sitepull
+            '
+
       - name: Upload native artifacts
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: ${{ matrix.artifact }}-${{ runner.arch }}
           path: apps/desktop/out/make/**/*
@@ -68,17 +126,19 @@ jobs:
   release:
     name: Publish GitHub release
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: make
+    needs: [quality, release-metadata, make]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
       contents: write
+      id-token: write
+      attestations: write
     steps:
       - name: Check out release notes
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
       - name: Download native artifacts
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           pattern: sitepull-*
           path: native-artifacts
@@ -91,7 +151,7 @@ jobs:
           while IFS= read -r -d '' source; do
             filename="$(basename "$source")"
             case "$filename" in
-              *.dmg|*.zip|*.deb|*.rpm|*Setup.exe|*.nupkg)
+              *.dmg|*.zip|*.deb|*Setup.exe|*.nupkg)
                 destination="release-assets/$filename"
                 ;;
               RELEASES)
@@ -115,12 +175,43 @@ jobs:
             exit 1
           fi
 
+          checksum_manifest="${RUNNER_TEMP}/SHA256SUMS.txt"
           (
             cd release-assets
-            find . -maxdepth 1 -type f ! -name SHA256SUMS.txt -printf '%f\0' \
+            find . -maxdepth 1 -type f -printf '%f\0' \
               | sort -z \
-              | xargs -0 sha256sum > SHA256SUMS.txt
+              | xargs -0 sha256sum > "$checksum_manifest"
           )
+          mv "$checksum_manifest" release-assets/SHA256SUMS.txt
+
+      - name: Verify staged release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd release-assets
+
+          expected_manifest="${RUNNER_TEMP}/SHA256SUMS.expected"
+          find . -maxdepth 1 -type f ! -name SHA256SUMS.txt -printf '%f\0' \
+            | sort -z \
+            | xargs -0 sha256sum > "$expected_manifest"
+
+          if ! cmp --silent SHA256SUMS.txt "$expected_manifest"; then
+            echo "Checksum manifest does not cover the exact staged release asset set" >&2
+            diff -u SHA256SUMS.txt "$expected_manifest" || true
+            exit 1
+          fi
+
+          sha256sum --check --strict SHA256SUMS.txt
+
+      - name: Attest native release assets
+        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4.1.1
+        with:
+          subject-checksums: release-assets/SHA256SUMS.txt
+
+      - name: Attest checksum manifest
+        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4.1.1
+        with:
+          subject-path: release-assets/SHA256SUMS.txt
 
       - name: Publish versioned release
         env:
@@ -129,14 +220,7 @@ jobs:
         run: |
           set -euo pipefail
           notes_file="docs/release-notes/${GITHUB_REF_NAME}.md"
-          if [[ -f "$notes_file" ]]; then
-            gh release create "$GITHUB_REF_NAME" release-assets/* \
-              --verify-tag \
-              --title "Sitepull $GITHUB_REF_NAME" \
-              --notes-file "$notes_file"
-          else
-            gh release create "$GITHUB_REF_NAME" release-assets/* \
-              --verify-tag \
-              --title "Sitepull $GITHUB_REF_NAME" \
-              --generate-notes
-          fi
+          gh release create "$GITHUB_REF_NAME" release-assets/* \
+            --verify-tag \
+            --title "Sitepull $GITHUB_REF_NAME" \
+            --notes-file "$notes_file"

@@ -76,15 +76,60 @@ export const TypographyTokenSchema = z
     }
   });
 
+const MeasurementTokenShape = {
+  value: TokenValueSchema,
+  occurrences: PositiveIntegerSchema,
+  contexts: z.array(z.string().min(1).max(128)),
+  routes: z.array(RoutePathSchema),
+} as const;
+
+function hasNegativeCssLength(value: string): boolean {
+  const match = /^\s*(-?(?:\d+(?:\.\d*)?|\.\d+))(?:[a-z]+|%)\s*$/iu.exec(value);
+  return match?.[1] !== undefined && Number(match[1]) < 0;
+}
+
+/** Measurements whose CSS domains cannot be negative, such as border radii. */
 export const MeasurementTokenSchema = z
   .object({
-    value: TokenValueSchema,
+    ...MeasurementTokenShape,
     pixels: z.number().finite().nonnegative().nullable(),
-    occurrences: PositiveIntegerSchema,
-    contexts: z.array(z.string().min(1).max(128)),
-    routes: z.array(RoutePathSchema),
   })
-  .strict();
+  .strict()
+  .superRefine((token, context) => {
+    if ((token.pixels !== null && token.pixels < 0) || hasNegativeCssLength(token.value)) {
+      context.addIssue({
+        code: 'custom',
+        message: 'This measurement domain cannot contain negative CSS lengths',
+        path: [token.pixels !== null && token.pixels < 0 ? 'pixels' : 'value'],
+      });
+    }
+  });
+
+/**
+ * Spacing includes margins, whose computed values may legitimately be signed.
+ * Negative values remain invalid for padding and gap contexts.
+ */
+export const SpacingTokenSchema = z
+  .object({
+    ...MeasurementTokenShape,
+    pixels: z.number().finite().nullable(),
+  })
+  .strict()
+  .superRefine((token, context) => {
+    const negative =
+      (token.pixels !== null && token.pixels < 0) || hasNegativeCssLength(token.value);
+    if (
+      negative &&
+      (token.contexts.length === 0 ||
+        token.contexts.some((property) => property !== 'margin' && !property.startsWith('margin-')))
+    ) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Negative spacing measurements are valid only for margin contexts',
+        path: [token.pixels !== null && token.pixels < 0 ? 'pixels' : 'value'],
+      });
+    }
+  });
 
 export const ShadowTokenSchema = z
   .object({
@@ -178,7 +223,7 @@ export const DesignManifestSchema = z
     sourcePageCount: NonNegativeIntegerSchema,
     colors: z.array(ColorTokenSchema),
     typography: z.array(TypographyTokenSchema),
-    spacing: z.array(MeasurementTokenSchema),
+    spacing: z.array(SpacingTokenSchema),
     radii: z.array(MeasurementTokenSchema),
     shadows: z.array(ShadowTokenSchema),
     borders: z.array(BorderTokenSchema),
@@ -207,6 +252,7 @@ export type ColorToken = z.infer<typeof ColorTokenSchema>;
 export type TypographyRole = z.infer<typeof TypographyRoleSchema>;
 export type TypographyToken = z.infer<typeof TypographyTokenSchema>;
 export type MeasurementToken = z.infer<typeof MeasurementTokenSchema>;
+export type SpacingToken = z.infer<typeof SpacingTokenSchema>;
 export type ShadowToken = z.infer<typeof ShadowTokenSchema>;
 export type BorderToken = z.infer<typeof BorderTokenSchema>;
 export type BreakpointToken = z.infer<typeof BreakpointTokenSchema>;

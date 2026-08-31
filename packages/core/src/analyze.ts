@@ -1,3 +1,4 @@
+import { DesignManifestSchema } from '@sitepull/contracts';
 import type {
   BorderToken,
   BreakpointToken,
@@ -9,6 +10,7 @@ import type {
   ElementRecord,
   MeasurementToken,
   ShadowToken,
+  SpacingToken,
   TypographyRole,
   TypographyToken as ContractTypographyToken,
 } from '@sitepull/contracts';
@@ -78,7 +80,20 @@ function typographyRole(token: {
   return null;
 }
 
-function measurements(
+function spacingMeasurements(
+  tokens: readonly FrequencyToken[],
+  routes: readonly string[],
+): SpacingToken[] {
+  return tokens.map((token) => ({
+    value: token.value,
+    pixels: pxValue(token.value),
+    occurrences: token.count,
+    contexts: [...token.properties],
+    routes: [...routes],
+  }));
+}
+
+function nonnegativeMeasurements(
   tokens: readonly FrequencyToken[],
   routes: readonly string[],
 ): MeasurementToken[] {
@@ -254,20 +269,20 @@ export function analyzeSiteDesign(pages: readonly AnalyzablePage[]): DesignManif
     routes: [...routes],
   }));
 
-  return {
+  return DesignManifestSchema.parse({
     schemaVersion: 1,
     generatedAt: new Date().toISOString(),
     sourcePageCount: pages.length,
     colors,
     typography,
-    spacing: measurements(analysis.spacing, routes),
-    radii: measurements(analysis.radii, routes),
+    spacing: spacingMeasurements(analysis.spacing, routes),
+    radii: nonnegativeMeasurements(analysis.radii, routes),
     shadows,
     borders: aggregateBorders(pages),
     breakpoints: aggregateBreakpoints(pages),
     cssVariables: mergeCssVariables(pages),
     components: componentsForPages(pages),
-  };
+  });
 }
 
 export function designSystemMarkdown(design: DesignManifest): string {

@@ -321,9 +321,6 @@ importers:
       '@electron-forge/maker-dmg':
         specifier: 7.11.2
         version: 7.11.2(bluebird@3.7.2)(supports-color@8.1.1)
-      '@electron-forge/maker-rpm':
-        specifier: 7.11.2
-        version: 7.11.2(bluebird@3.7.2)(supports-color@8.1.1)
       '@electron-forge/maker-squirrel':
         specifier: 7.11.2
         version: 7.11.2(bluebird@3.7.2)(supports-color@8.1.1)
@@ -609,10 +606,6 @@ packages:
 
   '@electron-forge/maker-dmg@7.11.2':
     resolution: {integrity: sha512-vh8/mnu3xyMbRcz3S0TV1rB7ZyGhMK60Yz2f2R+Zmj1EbAivLEq5UAvzHdB+kLttr0Dpjp2FIX4TcZ9neD4Y9g==}
-    engines: {node: '>= 16.4.0'}
-
-  '@electron-forge/maker-rpm@7.11.2':
-    resolution: {integrity: sha512-BEj/DcW6bSpmOyKUa3UsOgT7Hm3ZuP0Wa6OuQEunjxeCWn7yoDTDtjuYA0xRvzk+T4NCyDO3RBGjy6nYNSPU2Q==}
     engines: {node: '>= 16.4.0'}
 
   '@electron-forge/maker-squirrel@7.11.2':
@@ -2204,12 +2197,6 @@ packages:
   electron-installer-dmg@5.0.1:
     resolution: {integrity: sha512-qOa1aAQdX57C+vzhDk3549dd/PRlNL4F8y736MTD1a43qptD+PvHY97Bo9gSf+OZ8iUWE7BrYSpk/FgLUe40EA==}
     engines: {node: '>= 16'}
-    hasBin: true
-
-  electron-installer-redhat@3.4.0:
-    resolution: {integrity: sha512-gEISr3U32Sgtj+fjxUAlSDo3wyGGq6OBx7rF5UdpIgbnpUvMN4W5uYb0ThpnAZ42VEJh/3aODQXHbFS4f5J3Iw==}
-    engines: {node: '>= 10.0.0'}
-    os: [darwin, linux]
     hasBin: true
 
   electron-squirrel-startup@1.0.1:
@@ -4766,16 +4753,6 @@ snapshots:
       - bluebird
       - supports-color
 
-  '@electron-forge/maker-rpm@7.11.2(bluebird@3.7.2)(supports-color@8.1.1)':
-    dependencies:
-      '@electron-forge/maker-base': 7.11.2(bluebird@3.7.2)(supports-color@8.1.1)
-      '@electron-forge/shared-types': 7.11.2(bluebird@3.7.2)(supports-color@8.1.1)
-    optionalDependencies:
-      electron-installer-redhat: 3.4.0(supports-color@8.1.1)
-    transitivePeerDependencies:
-      - bluebird
-      - supports-color
-
   '@electron-forge/maker-squirrel@7.11.2(bluebird@3.7.2)(supports-color@8.1.1)':
     dependencies:
       '@electron-forge/maker-base': 7.11.2(bluebird@3.7.2)(supports-color@8.1.1)
@@ -6448,19 +6425,6 @@ snapshots:
       minimist: 1.2.8
     optionalDependencies:
       appdmg: 0.6.6
-    transitivePeerDependencies:
-      - supports-color
-    optional: true
-
-  electron-installer-redhat@3.4.0(supports-color@8.1.1):
-    dependencies:
-      '@malept/cross-spawn-promise': 1.1.1
-      debug: 4.4.3(supports-color@8.1.1)
-      electron-installer-common: 0.10.4(supports-color@8.1.1)
-      fs-extra: 9.1.0
-      lodash: 4.18.1
-      word-wrap: 1.2.5
-      yargs: 16.2.2
     transitivePeerDependencies:
       - supports-color
     optional: true
