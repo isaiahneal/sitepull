@@ -399,6 +399,80 @@ describe('loopback network-policy proxy', () => {
     }
   });
 
+  it('isolates overlapping same-host errors while sharing one global proxy selector', async () => {
+    let destinationRequests = 0;
+    const destination = createHttpServer((_request, response) => {
+      destinationRequests += 1;
+      response.end('isolated-context');
+    });
+    const destinationPort = await listen(destination);
+    const rejectingUpstream = createConnectProxy(407);
+    const passingUpstream = createConnectProxy();
+    const rejectingPort = await listen(rejectingUpstream.server);
+    const passingPort = await listen(passingUpstream.server);
+    const outboundRouter = createOutboundRouter({
+      connectTimeoutMs: 1_000,
+      proxyPool: {
+        entries: [
+          { server: `http://127.0.0.1:${rejectingPort}` },
+          { server: `http://127.0.0.1:${passingPort}` },
+        ],
+        selection: 'round-robin',
+        jitter: { minMs: 0, maxMs: 0 },
+      },
+    });
+    const proxyOptions = {
+      allowPrivateHosts: true,
+      connectTimeoutMs: 1_000,
+      lookupAddresses: () => Promise.resolve([{ address: '127.0.0.1', family: 4 }]),
+      outboundRouter,
+    } as const;
+    const firstContextProxy = await createNetworkPolicyProxy(proxyOptions);
+    const secondContextProxy = await createNetworkPolicyProxy(proxyOptions);
+    const contextProxies = [firstContextProxy, secondContextProxy] as const;
+    const target = `http://overlap.invalid:${destinationPort}/same-host`;
+    const attemptStartedAt = Date.now();
+
+    try {
+      const results = await Promise.all(
+        contextProxies.map((proxy) => getThroughProxy(proxy.serverUrl, target)),
+      );
+      expect(results.map((result) => result.status).sort()).toEqual([200, 502]);
+      expect(rejectingUpstream.connections.count).toBe(1);
+      expect(passingUpstream.connections.count).toBe(1);
+      expect(destinationRequests).toBe(1);
+
+      const failedIndex = results.findIndex(
+        (result) => result.proxyError === 'UPSTREAM_PROXY_AUTH_REQUIRED',
+      );
+      const healthyIndex = results.findIndex((result) => result.status === 200);
+      const failedContextProxy = contextProxies[failedIndex];
+      const healthyContextProxy = contextProxies[healthyIndex];
+      if (failedContextProxy === undefined || healthyContextProxy === undefined) {
+        throw new Error('Overlapping proxy requests did not produce one failure and one success.');
+      }
+
+      const unrelatedBrowserError = new SitepullError({
+        code: 'CRAWL_FAILED',
+        message: 'The healthy context had an independent browser error.',
+        stage: 'crawling-pages',
+        retryable: true,
+      });
+      expect(
+        failedContextProxy.upstreamErrorFor(target, attemptStartedAt) ?? unrelatedBrowserError,
+      ).toMatchObject({ code: 'UPSTREAM_PROXY_AUTH_REQUIRED', retryable: false });
+      expect(
+        healthyContextProxy.upstreamErrorFor(target, attemptStartedAt) ?? unrelatedBrowserError,
+      ).toBe(unrelatedBrowserError);
+    } finally {
+      await Promise.all(contextProxies.map((proxy) => proxy.close().catch(() => undefined)));
+      outboundRouter.close();
+      await rejectingUpstream.close();
+      await passingUpstream.close();
+      await closeServer(destination);
+    }
+  });
+
   it('fails closed on proxy rejection and never serializes credentials', async () => {
     let destinationRequests = 0;
     const destination = createHttpServer((_request, response) => {

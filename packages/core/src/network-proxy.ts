@@ -7,7 +7,11 @@ import type { ProxyPoolRequest } from '@sitepull/contracts';
 
 import { SitepullError } from './errors.js';
 import { resolveNetworkTarget, type NetworkAddressLookup } from './network-policy.js';
-import { createOutboundRouter, type OutboundConnectionFactory } from './upstream-proxy.js';
+import {
+  createOutboundRouter,
+  type OutboundConnectionFactory,
+  type OutboundRouter,
+} from './upstream-proxy.js';
 
 export interface NetworkPolicyProxyOptions {
   readonly allowPrivateHosts: boolean;
@@ -15,6 +19,8 @@ export interface NetworkPolicyProxyOptions {
   readonly lookupAddresses?: NetworkAddressLookup;
   readonly proxyPool?: ProxyPoolRequest;
   readonly signal?: AbortSignal;
+  /** Caller-owned router used to share one proxy-pool selector across isolated listeners. */
+  readonly outboundRouter?: OutboundRouter;
   readonly onError?: (error: unknown, target: string | null) => void;
 }
 
@@ -266,12 +272,18 @@ export async function createNetworkPolicyProxy(
   if (!Number.isSafeInteger(options.connectTimeoutMs) || options.connectTimeoutMs < 1) {
     throw new RangeError('connectTimeoutMs must be a positive safe integer.');
   }
+  if (options.outboundRouter !== undefined && options.proxyPool !== undefined) {
+    throw new RangeError('proxyPool cannot be combined with a caller-owned outboundRouter.');
+  }
 
-  const outboundRouter = createOutboundRouter({
-    connectTimeoutMs: options.connectTimeoutMs,
-    ...(options.proxyPool === undefined ? {} : { proxyPool: options.proxyPool }),
-    ...(options.signal === undefined ? {} : { signal: options.signal }),
-  });
+  const ownsOutboundRouter = options.outboundRouter === undefined;
+  const outboundRouter =
+    options.outboundRouter ??
+    createOutboundRouter({
+      connectTimeoutMs: options.connectTimeoutMs,
+      ...(options.proxyPool === undefined ? {} : { proxyPool: options.proxyPool }),
+      ...(options.signal === undefined ? {} : { signal: options.signal }),
+    });
 
   let closed = false;
   const upstreamErrors = new Map<string, TimedProxyError>();
@@ -468,23 +480,29 @@ export async function createNetworkPolicyProxy(
   server.on('connection', trackSocket);
   server.keepAliveTimeout = 5_000;
   server.requestTimeout = 0;
-  await new Promise<void>((resolve, reject) => {
-    const onError = (error: Error): void => {
-      server.off('listening', onListening);
-      reject(error);
-    };
-    const onListening = (): void => {
-      server.off('error', onError);
-      resolve();
-    };
-    server.once('error', onError);
-    server.once('listening', onListening);
-    server.listen(0, '127.0.0.1');
-  });
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const onError = (error: Error): void => {
+        server.off('listening', onListening);
+        reject(error);
+      };
+      const onListening = (): void => {
+        server.off('error', onError);
+        resolve();
+      };
+      server.once('error', onError);
+      server.once('listening', onListening);
+      server.listen(0, '127.0.0.1');
+    });
+  } catch (error) {
+    if (ownsOutboundRouter) outboundRouter.close();
+    throw error;
+  }
   server.unref();
   const address = server.address();
   if (address === null || typeof address === 'string') {
     server.close();
+    if (ownsOutboundRouter) outboundRouter.close();
     throw new Error('Sitepull network proxy did not expose a TCP port.');
   }
 
@@ -503,7 +521,7 @@ export async function createNetworkPolicyProxy(
     close: () => {
       closePromise ??= new Promise<void>((resolve, reject) => {
         closed = true;
-        outboundRouter.close();
+        if (ownsOutboundRouter) outboundRouter.close();
         for (const request of requests) request.destroy();
         for (const socket of sockets) socket.destroy();
         server.close((error) => {

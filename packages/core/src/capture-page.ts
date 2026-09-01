@@ -603,11 +603,13 @@ export async function capturePage(input: CapturePageInput): Promise<CapturedPage
   page.on('requestfailed', onRequestFailed);
   page.on('response', onResponse);
 
+  let browserPhase: 'navigation' | 'capture' = 'navigation';
   try {
     const navigation = await page.goto(input.url, {
       waitUntil: 'domcontentloaded',
       timeout: input.pageTimeoutMs,
     });
+    browserPhase = 'capture';
     if (navigation === null) {
       throw new SitepullError({
         code: 'NO_HTML_DOCUMENT',
@@ -629,7 +631,11 @@ export async function capturePage(input: CapturePageInput): Promise<CapturedPage
         message: `Sitepull's upstream proxy could not reach ${input.url}.`,
         stage: 'rendering',
         retryable: false,
-        details: { status: navigationStatus, proxyErrorCode },
+        details: {
+          status: navigationStatus,
+          proxyErrorCode,
+          networkPolicyProxyError: true,
+        },
       });
     }
     if (isRetryableHttpStatus(navigationStatus)) {
@@ -775,6 +781,7 @@ export async function capturePage(input: CapturePageInput): Promise<CapturedPage
         message: `Could not resolve host ${new URL(input.url).hostname}.`,
         stage: 'rendering',
         retryable: true,
+        details: { browserPhase },
         cause: error,
       });
     }
@@ -784,6 +791,7 @@ export async function capturePage(input: CapturePageInput): Promise<CapturedPage
         message: `TLS connection failed for ${new URL(input.url).hostname}.`,
         stage: 'rendering',
         retryable: true,
+        details: { browserPhase },
         cause: error,
       });
     }
@@ -793,6 +801,7 @@ export async function capturePage(input: CapturePageInput): Promise<CapturedPage
         message: `Navigation timed out after ${input.pageTimeoutMs} ms for ${input.url}.`,
         stage: 'rendering',
         retryable: true,
+        details: { browserPhase },
         cause: error,
       });
     }
@@ -801,6 +810,7 @@ export async function capturePage(input: CapturePageInput): Promise<CapturedPage
       message: `Could not capture ${input.url}: ${message}`,
       stage: 'crawling-pages',
       retryable: true,
+      details: { browserPhase },
       cause: error,
     });
   } finally {

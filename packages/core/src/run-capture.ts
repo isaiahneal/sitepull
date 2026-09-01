@@ -50,6 +50,7 @@ import { ProjectWriter } from './project.js';
 import { ResourceCaptureBudget } from './resource-budget.js';
 import { ResourceStore } from './resource-store.js';
 import { classifyResource, type ResourceKind } from './resources.js';
+import { createOutboundRouter, type OutboundRouter } from './upstream-proxy.js';
 import {
   canonicalizeUrl,
   evaluateDiscoveredUrl,
@@ -214,49 +215,88 @@ async function launchBrowser(
 
 async function createContexts(options: {
   browser: Browser;
-  count: number;
   sourceUrl: string;
   sameOriginOnly: boolean;
   includeSubdomains: boolean;
   pageTimeoutMs: number;
-  proxyServer: string;
+  proxyServers: readonly string[];
   userAgent: string | null;
   engine: 'webkit' | 'chromium' | 'firefox';
 }): Promise<BrowserContext[]> {
-  return Promise.all(
-    Array.from({ length: options.count }, async () => {
+  const contexts: BrowserContext[] = [];
+  try {
+    for (const proxyServer of options.proxyServers) {
       const context = await options.browser.newContext({
         acceptDownloads: false,
         ignoreHTTPSErrors: false,
         serviceWorkers: 'block',
-        proxy: { server: options.proxyServer },
+        proxy: { server: proxyServer },
         ...(options.userAgent === null ? {} : { userAgent: options.userAgent }),
       });
-      await installUntrustedPageNetworkGuards(context, options.engine);
-      context.setDefaultTimeout(options.pageTimeoutMs);
-      await context.route('**/*', async (route) => {
-        const request = route.request();
-        try {
-          if (
-            options.sameOriginOnly &&
-            request.isNavigationRequest() &&
-            request.frame().parentFrame() === null &&
-            !isAllowedByOrigin(request.url(), {
-              originUrl: options.sourceUrl,
-              includeSubdomains: options.includeSubdomains,
-            })
-          ) {
+      try {
+        await installUntrustedPageNetworkGuards(context, options.engine);
+        context.setDefaultTimeout(options.pageTimeoutMs);
+        await context.route('**/*', async (route) => {
+          const request = route.request();
+          try {
+            if (
+              options.sameOriginOnly &&
+              request.isNavigationRequest() &&
+              request.frame().parentFrame() === null &&
+              !isAllowedByOrigin(request.url(), {
+                originUrl: options.sourceUrl,
+                includeSubdomains: options.includeSubdomains,
+              })
+            ) {
+              await route.abort('blockedbyclient');
+              return;
+            }
+            await route.continue();
+          } catch {
             await route.abort('blockedbyclient');
-            return;
           }
-          await route.continue();
-        } catch {
-          await route.abort('blockedbyclient');
-        }
-      });
-      return context;
-    }),
-  );
+        });
+        contexts.push(context);
+      } catch (error) {
+        await context.close().catch(() => undefined);
+        throw error;
+      }
+    }
+    return contexts;
+  } catch (error) {
+    await Promise.all(contexts.map((context) => context.close().catch(() => undefined)));
+    throw error;
+  }
+}
+
+async function closeNetworkPolicyProxies(proxies: readonly NetworkPolicyProxy[]): Promise<void> {
+  const results = await Promise.allSettled(proxies.map((proxy) => proxy.close()));
+  const failure = results.find((result) => result.status === 'rejected');
+  if (failure?.status === 'rejected') throw failure.reason;
+}
+
+async function createIsolatedNetworkPolicyProxies(options: {
+  count: number;
+  allowPrivateHosts: boolean;
+  connectTimeoutMs: number;
+  outboundRouter: OutboundRouter;
+}): Promise<NetworkPolicyProxy[]> {
+  const proxies: NetworkPolicyProxy[] = [];
+  try {
+    for (let index = 0; index < options.count; index += 1) {
+      proxies.push(
+        await createNetworkPolicyProxy({
+          allowPrivateHosts: options.allowPrivateHosts,
+          connectTimeoutMs: options.connectTimeoutMs,
+          outboundRouter: options.outboundRouter,
+        }),
+      );
+    }
+    return proxies;
+  } catch (error) {
+    await closeNetworkPolicyProxies(proxies).catch(() => undefined);
+    throw error;
+  }
 }
 
 function isHttpFallbackCandidate(error: unknown): boolean {
@@ -276,21 +316,15 @@ function isHttpFallbackCandidate(error: unknown): boolean {
   );
 }
 
-function isProxyTransportFailure(error: unknown): boolean {
-  if (error instanceof SitepullError && typeof error.details?.proxyErrorCode === 'string') {
-    return true;
-  }
-  const messages: string[] = [];
-  const seen = new Set<Error>();
-  let current: unknown = error;
-  while (current instanceof Error && !seen.has(current) && seen.size < 8) {
-    seen.add(current);
-    messages.push(current.message);
-    current = current.cause;
-  }
-  const message = messages.length === 0 ? String(error) : messages.join('\n');
-  return /ERR_TUNNEL_CONNECTION_FAILED|ERR_PROXY_CONNECTION_FAILED|kCFErrorDomainCFNetwork error (?:306|310)|NS_ERROR_PROXY_CONNECTION_REFUSED|NS_ERROR_UNKNOWN_PROXY_HOST|proxy[^\n]*tunnel|tunnel[^\n]*proxy/iu.test(
-    message,
+function shouldUseCorrelatedUpstreamError(error: unknown): boolean {
+  if (!(error instanceof SitepullError)) return false;
+  if (error.details?.browserPhase === 'navigation') return true;
+
+  return (
+    error.code === 'CRAWL_FAILED' &&
+    error.details?.networkPolicyProxyError === true &&
+    error.details.status === 502 &&
+    typeof error.details.proxyErrorCode === 'string'
   );
 }
 
@@ -319,12 +353,11 @@ async function resolveInferredStartUrl(options: {
     if (index === 1) await options.onFallback(httpsError, candidate);
     const [context] = await createContexts({
       browser: options.browser,
-      count: 1,
       sourceUrl: candidate,
       sameOriginOnly: false,
       includeSubdomains: options.includeSubdomains,
       pageTimeoutMs: options.pageTimeoutMs,
-      proxyServer: options.proxyServer,
+      proxyServers: [options.proxyServer],
       userAgent: options.userAgent,
       engine: options.engine,
     });
@@ -367,7 +400,9 @@ export async function runCapture(
   let writer: ProjectWriter | undefined;
   let logger: SitepullLogger | undefined;
   let browser: Browser | undefined;
-  let networkProxy: NetworkPolicyProxy | undefined;
+  let outboundRouter: OutboundRouter | undefined;
+  let inferredNetworkProxy: NetworkPolicyProxy | undefined;
+  let contextNetworkProxies: NetworkPolicyProxy[] = [];
   let contexts: BrowserContext[] = [];
   let completedPages = 0;
   let elementCount = 0;
@@ -467,26 +502,32 @@ export async function runCapture(
 
     emitProgress('launching-browser', 'started', `Launching ${config.engine}.`, normalizedUrl);
     browser = await launchBrowser(config.engine, config.headed, options.chromiumExecutablePath);
-    networkProxy = await createNetworkPolicyProxy({
-      allowPrivateHosts,
+    outboundRouter = createOutboundRouter({
       connectTimeoutMs: config.pageTimeoutMs,
       ...(options.proxyPool === undefined ? {} : { proxyPool: options.proxyPool }),
       ...(options.signal === undefined ? {} : { signal: options.signal }),
     });
-    const activeNetworkProxy = networkProxy;
-    const openNetworkConnection = activeNetworkProxy.openConnection;
+    const activeOutboundRouter = outboundRouter;
+    const openNetworkConnection = activeOutboundRouter.open;
     if (input.allowHttpFallback === true && new URL(normalizedUrl).protocol === 'https:') {
+      inferredNetworkProxy = await createNetworkPolicyProxy({
+        allowPrivateHosts,
+        connectTimeoutMs: config.pageTimeoutMs,
+        outboundRouter: activeOutboundRouter,
+      });
+      const activeInferredNetworkProxy = inferredNetworkProxy;
       normalizedUrl = await resolveInferredStartUrl({
         browser,
         httpsUrl: normalizedUrl,
         includeSubdomains: config.includeSubdomains,
         allowPrivateHosts,
         pageTimeoutMs: config.pageTimeoutMs,
-        proxyServer: networkProxy.serverUrl,
+        proxyServer: activeInferredNetworkProxy.serverUrl,
         userAgent: config.userAgent,
         engine: config.engine,
         ...(options.signal === undefined ? {} : { signal: options.signal }),
-        upstreamErrorFor: (target, sinceMs) => activeNetworkProxy.upstreamErrorFor(target, sinceMs),
+        upstreamErrorFor: (target, sinceMs) =>
+          activeInferredNetworkProxy.upstreamErrorFor(target, sinceMs),
         onFallback: async (error, httpUrl) => {
           emitProgress(
             'launching-browser',
@@ -507,14 +548,20 @@ export async function runCapture(
         },
       });
     }
+    contextNetworkProxies = await createIsolatedNetworkPolicyProxies({
+      count: config.crawlConcurrency,
+      allowPrivateHosts,
+      connectTimeoutMs: config.pageTimeoutMs,
+      outboundRouter: activeOutboundRouter,
+    });
+    const activeContextNetworkProxies = contextNetworkProxies;
     contexts = await createContexts({
       browser,
-      count: config.crawlConcurrency,
       sourceUrl: normalizedUrl,
       sameOriginOnly: config.sameOriginOnly,
       includeSubdomains: config.includeSubdomains,
       pageTimeoutMs: config.pageTimeoutMs,
-      proxyServer: networkProxy.serverUrl,
+      proxyServers: activeContextNetworkProxies.map((proxy) => proxy.serverUrl),
       userAgent: config.userAgent,
       engine: config.engine,
     });
@@ -678,10 +725,11 @@ export async function runCapture(
         config.crawlConcurrency,
         async (entry, index) => {
           const context = contexts[index];
-          if (context === undefined) {
+          const contextNetworkProxy = activeContextNetworkProxies[index];
+          if (context === undefined || contextNetworkProxy === undefined) {
             throw new SitepullError({
               code: 'INTERNAL_ERROR',
-              message: 'Browser context pool was unavailable.',
+              message: 'Browser context or its isolated network proxy was unavailable.',
             });
           }
           const id = routeSlug(entry.url);
@@ -719,12 +767,8 @@ export async function runCapture(
                 return captured;
               } catch (error) {
                 attemptBudget.rollback();
-                const upstreamError = activeNetworkProxy.upstreamErrorFor(
-                  entry.url,
-                  attemptStartedAt,
-                );
-                if (upstreamError !== undefined && isProxyTransportFailure(error)) {
-                  throw upstreamError;
+                if (shouldUseCorrelatedUpstreamError(error)) {
+                  throw contextNetworkProxy.upstreamErrorFor(entry.url, attemptStartedAt) ?? error;
                 }
                 throw error;
               }
@@ -1234,8 +1278,14 @@ export async function runCapture(
     contexts = [];
     await browser.close();
     browser = undefined;
-    await networkProxy.close();
-    networkProxy = undefined;
+    await closeNetworkPolicyProxies([
+      ...(inferredNetworkProxy === undefined ? [] : [inferredNetworkProxy]),
+      ...contextNetworkProxies,
+    ]);
+    inferredNetworkProxy = undefined;
+    contextNetworkProxies = [];
+    activeOutboundRouter.close();
+    outboundRouter = undefined;
     const outputDirectory = await writer.finalize();
     emitProgress('packaging', 'completed', 'Capture project finalized.');
     emit({
@@ -1265,7 +1315,11 @@ export async function runCapture(
     }
     await Promise.all(contexts.map((context) => context.close().catch(() => undefined)));
     await browser?.close().catch(() => undefined);
-    await networkProxy?.close().catch(() => undefined);
+    await closeNetworkPolicyProxies([
+      ...(inferredNetworkProxy === undefined ? [] : [inferredNetworkProxy]),
+      ...contextNetworkProxies,
+    ]).catch(() => undefined);
+    outboundRouter?.close();
     await logger?.close().catch(() => undefined);
     if (writer !== undefined) {
       if (structured.code === 'CAPTURE_CANCELLED')

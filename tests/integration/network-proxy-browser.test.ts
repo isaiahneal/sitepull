@@ -1,6 +1,7 @@
 import http from 'node:http';
 import dgram from 'node:dgram';
 import { mkdir, rm } from 'node:fs/promises';
+import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -29,6 +30,61 @@ function closeServer(server: http.Server): Promise<void> {
   return new Promise<void>((resolve, reject) => {
     server.close((error) => (error ? reject(error) : resolve()));
   });
+}
+
+function createFirstTunnelThenRejectProxy(): {
+  readonly server: http.Server;
+  readonly connections: { count: number };
+  close(): Promise<void>;
+} {
+  const connections = { count: 0 };
+  const sockets = new Set<net.Socket>();
+  const server = http.createServer();
+  server.on('connection', (socket) => {
+    sockets.add(socket);
+    socket.once('close', () => sockets.delete(socket));
+  });
+  server.on('connect', (request, clientSocket, head) => {
+    connections.count += 1;
+    if (connections.count > 1) {
+      clientSocket.end(
+        'HTTP/1.1 407 Proxy Authentication Required\r\nConnection: close\r\nContent-Length: 0\r\n\r\n',
+      );
+      return;
+    }
+
+    const target = new URL(`http://${request.url ?? ''}`);
+    const upstream = net.createConnection({
+      host: target.hostname,
+      port: Number.parseInt(target.port, 10),
+    });
+    sockets.add(upstream);
+    upstream.once('close', () => sockets.delete(upstream));
+    upstream.once('connect', () => {
+      clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+      if (head.byteLength > 0) upstream.write(head);
+      clientSocket.pipe(upstream);
+      upstream.pipe(clientSocket);
+    });
+    upstream.once('error', () => {
+      if (!clientSocket.destroyed) {
+        clientSocket.end(
+          'HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\nContent-Length: 0\r\n\r\n',
+        );
+      }
+    });
+    clientSocket.once('error', () => upstream.destroy());
+    clientSocket.once('close', () => upstream.destroy());
+  });
+
+  return {
+    server,
+    connections,
+    close: async () => {
+      for (const socket of sockets) socket.destroy();
+      await closeServer(server);
+    },
+  };
 }
 
 describe('browser network-policy proxy', () => {
@@ -88,6 +144,59 @@ describe('browser network-policy proxy', () => {
     } finally {
       await rm(outputRoot, { recursive: true, force: true });
       await closeServer(upstreamProxy);
+    }
+  }, 30_000);
+
+  it('preserves an HTTP navigation error after a same-host subresource proxy failure', async () => {
+    let destinationRequests = 0;
+    const destination = http.createServer((request, response) => {
+      destinationRequests += 1;
+      response.setHeader('Content-Type', 'text/html; charset=utf-8');
+      response.setHeader('Connection', 'close');
+      response.statusCode = request.url === '/' ? 403 : 200;
+      response.end(
+        request.url === '/'
+          ? '<!doctype html><html><head><script src="/blocked.js"></script></head><body>forbidden</body></html>'
+          : 'globalThis.blockedScriptLoaded = true;',
+      );
+    });
+    const destinationPort = await listen(destination);
+    const upstreamProxy = createFirstTunnelThenRejectProxy();
+    const upstreamProxyPort = await listen(upstreamProxy.server);
+    const outputRoot = path.join(os.tmpdir(), `sitepull-webkit-proxy-mask-${crypto.randomUUID()}`);
+    await mkdir(outputRoot);
+
+    try {
+      await expect(
+        runCapture(
+          {
+            url: `http://127.0.0.1:${destinationPort}/`,
+            outputDirectory: outputRoot,
+            config: {
+              engine: 'webkit',
+              maxDepth: 0,
+              maxPages: 1,
+              crawlConcurrency: 1,
+              pageTimeoutMs: 5_000,
+              viewports: [{ name: 'desktop', width: 800, height: 600 }],
+            },
+          },
+          {
+            allowPrivateHosts: true,
+            proxyPool: {
+              entries: [{ server: `http://127.0.0.1:${upstreamProxyPort}` }],
+              selection: 'round-robin',
+              jitter: { minMs: 0, maxMs: 0 },
+            },
+          },
+        ),
+      ).rejects.toMatchObject({ code: 'HTTP_FORBIDDEN', retryable: false });
+      expect(upstreamProxy.connections.count).toBeGreaterThanOrEqual(2);
+      expect(destinationRequests).toBe(1);
+    } finally {
+      await rm(outputRoot, { recursive: true, force: true });
+      await upstreamProxy.close();
+      await closeServer(destination);
     }
   }, 30_000);
 
