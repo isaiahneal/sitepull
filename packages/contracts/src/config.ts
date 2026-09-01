@@ -4,6 +4,13 @@ import { FileSystemPathSchema, HttpUrlSchema } from './primitives.js';
 
 export const BrowserEngineSchema = z.enum(['webkit', 'chromium', 'firefox']);
 
+export const UserAgentStringSchema = z
+  .string()
+  .trim()
+  .min(1, 'User-Agent cannot be blank')
+  .max(512, 'User-Agent must be 512 characters or fewer')
+  .regex(/^[\x20-\x7e]+$/u, 'User-Agent must contain printable ASCII characters only');
+
 export const ViewportNameSchema = z
   .string()
   .min(1)
@@ -63,6 +70,7 @@ export const CrawlConfigSchema = z
       .min(1)
       .max(16)
       .default(DEFAULT_RESOURCE_BODY_CONCURRENCY),
+    userAgent: UserAgentStringSchema.nullable().default(null),
     headed: z.boolean().default(false),
   })
   .strict()

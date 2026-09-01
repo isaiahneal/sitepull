@@ -1,17 +1,25 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   CAPTURE_EVENT_REPLAY_LIMIT,
+  proxyPoolRecipeFromRequest,
   type CaptureEvent,
   type CaptureJobSnapshot,
   type CaptureManifest,
   type CaptureRecipe,
   type ExportMode,
   type IpcResult,
+  type ProxyPoolRecipe,
+  type ProxyPoolRequest,
   type SerializedSitepullError,
   type SystemActionResult,
 } from '@sitepull/contracts';
 
-import type { AppModel, CaptureSession, StartCaptureOptions } from '../types.js';
+import type {
+  AppModel,
+  CaptureSession,
+  SafeCaptureRequest,
+  StartCaptureOptions,
+} from '../types.js';
 
 const INITIAL_MODEL: AppModel = {
   screen: 'empty',
@@ -51,6 +59,8 @@ export function useSitepull() {
   const viewGenerationRef = useRef(0);
   const recentsRequestRef = useRef(0);
   const reconcileRequestRef = useRef(0);
+  /** Request-only proxy secrets available solely to Retry in this renderer session. */
+  const retryRequestRef = useRef<StartCaptureOptions | null>(null);
 
   const fail = useCallback((error: SerializedSitepullError) => {
     activeCaptureRef.current = null;
@@ -138,6 +148,7 @@ export function useSitepull() {
       terminalCaptureRef.current = event.captureId;
       startingRef.current = false;
       if (event.type === 'complete') {
+        retryRequestRef.current = null;
         void loadManifest(event.captureId).then(loadRecents);
       } else {
         fail(event.error);
@@ -247,6 +258,7 @@ export function useSitepull() {
   const startCapture = useCallback(
     async (options: StartCaptureOptions) => {
       const generation = ++viewGenerationRef.current;
+      retryRequestRef.current = cloneStartCaptureOptions(options);
       startingRef.current = true;
       localStartPendingRef.current = true;
       activeCaptureRef.current = null;
@@ -256,7 +268,7 @@ export function useSitepull() {
         screen: 'capturing',
         manifest: null,
         error: null,
-        lastRequest: options,
+        lastRequest: safeCaptureRequest(options),
         draftRecipe: null,
         viewRecipe: null,
         session: null,
@@ -270,6 +282,7 @@ export function useSitepull() {
             : { allowHttpFallback: options.allowHttpFallback }),
           config: options.config,
           ...(options.outputDirectory ? { outputDirectory: options.outputDirectory } : {}),
+          ...(options.proxyPool === undefined ? {} : { proxyPool: options.proxyPool }),
         });
         localStartPendingRef.current = false;
         if (!response.ok) {
@@ -357,6 +370,7 @@ export function useSitepull() {
 
   const openRecent = useCallback(
     async (captureId: string) => {
+      retryRequestRef.current = null;
       setModel((current) => ({
         ...current,
         recentsError: null,
@@ -373,6 +387,7 @@ export function useSitepull() {
   );
 
   const goHome = useCallback(() => {
+    retryRequestRef.current = null;
     viewGenerationRef.current += 1;
     reconcileRequestRef.current += 1;
     activeCaptureRef.current = null;
@@ -392,6 +407,7 @@ export function useSitepull() {
   }, []);
 
   const prepareCaptureAgain = useCallback((recipe: CaptureRecipe) => {
+    retryRequestRef.current = null;
     viewGenerationRef.current += 1;
     reconcileRequestRef.current += 1;
     activeCaptureRef.current = null;
@@ -411,8 +427,9 @@ export function useSitepull() {
   }, []);
 
   const retry = useCallback(() => {
-    if (model.lastRequest) void startCapture(model.lastRequest);
-  }, [model.lastRequest, startCapture]);
+    const request = retryRequestRef.current;
+    if (request !== null) void startCapture(cloneStartCaptureOptions(request));
+  }, [startCapture]);
 
   const exportCapture = useCallback(
     async (mode: ExportMode) => {
@@ -447,6 +464,7 @@ export function useSitepull() {
 
   return {
     model,
+    canRetry: model.screen === 'error' && retryRequestRef.current !== null,
     startCapture,
     cancelCapture,
     openRecent,
@@ -533,9 +551,61 @@ function cloneRecipe(recipe: CaptureRecipe): CaptureRecipe {
       ...recipe.config,
       viewports: recipe.config.viewports.map((viewport) => ({ ...viewport })),
     },
+    proxyPool: cloneProxyPoolRecipe(recipe.proxyPool),
   };
 }
 
 function cloneOptionalRecipe(recipe: CaptureRecipe | null): CaptureRecipe | null {
   return recipe === null ? null : cloneRecipe(recipe);
+}
+
+function cloneProxyPoolRecipe(proxyPool: ProxyPoolRecipe | null): ProxyPoolRecipe | null {
+  if (proxyPool === null) return null;
+  return {
+    ...proxyPool,
+    entries: proxyPool.entries.map((entry) => ({ ...entry })),
+    jitter: { ...proxyPool.jitter },
+  };
+}
+
+function cloneProxyPoolRequest(
+  proxyPool: ProxyPoolRequest | undefined,
+): ProxyPoolRequest | undefined {
+  if (proxyPool === undefined) return undefined;
+  return {
+    ...proxyPool,
+    entries: proxyPool.entries.map((entry) => ({
+      server: entry.server,
+      ...(entry.credentials === undefined ? {} : { credentials: { ...entry.credentials } }),
+    })),
+    jitter: { ...proxyPool.jitter },
+  };
+}
+
+function cloneStartCaptureOptions(options: StartCaptureOptions): StartCaptureOptions {
+  const proxyPool = cloneProxyPoolRequest(options.proxyPool);
+  return {
+    ...options,
+    config: {
+      ...options.config,
+      viewports: options.config.viewports.map((viewport) => ({ ...viewport })),
+    },
+    ...(proxyPool === undefined ? {} : { proxyPool }),
+  };
+}
+
+function safeCaptureRequest(options: StartCaptureOptions): SafeCaptureRequest {
+  return {
+    url: options.url,
+    ...(options.allowHttpFallback === undefined
+      ? {}
+      : { allowHttpFallback: options.allowHttpFallback }),
+    ...(options.outputDirectory === undefined ? {} : { outputDirectory: options.outputDirectory }),
+    config: {
+      ...options.config,
+      viewports: options.config.viewports.map((viewport) => ({ ...viewport })),
+    },
+    proxyPool:
+      options.proxyPool === undefined ? null : proxyPoolRecipeFromRequest(options.proxyPool),
+  };
 }

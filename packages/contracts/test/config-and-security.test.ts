@@ -10,7 +10,9 @@ import {
   DEFAULT_RESOURCE_BODY_CONCURRENCY,
   HttpUrlSchema,
   IpcRequestSchema,
+  normalizeProxyServer,
   normalizeHttpUrlInput,
+  ProxyPoolRequestSchema,
   ReadCaptureFilePayloadSchema,
   SafeRelativePathSchema,
   StartCapturePayloadSchema,
@@ -33,6 +35,7 @@ describe('crawl configuration contracts', () => {
       maxResourceBytes: DEFAULT_MAX_RESOURCE_BYTES,
       maxCaptureResourceBytes: DEFAULT_MAX_CAPTURE_RESOURCE_BYTES,
       resourceBodyConcurrency: DEFAULT_RESOURCE_BODY_CONCURRENCY,
+      userAgent: null,
       headed: false,
     });
     expect(DEFAULT_CRAWL_CONFIG).toEqual(CrawlConfigSchema.parse({}));
@@ -69,6 +72,17 @@ describe('crawl configuration contracts', () => {
     expect(CrawlConfigSchema.safeParse({ maxResourceBytes: 0 }).success).toBe(false);
     expect(CrawlConfigSchema.safeParse({ maxCaptureResourceBytes: 0 }).success).toBe(false);
     expect(CrawlConfigSchema.safeParse({ resourceBodyConcurrency: 17 }).success).toBe(false);
+  });
+
+  it('accepts a printable custom User-Agent and rejects header injection', () => {
+    expect(CrawlConfigSchema.parse({ userAgent: '  Sitepull-Test/1.0  ' }).userAgent).toBe(
+      'Sitepull-Test/1.0',
+    );
+    expect(CrawlConfigSchema.safeParse({ userAgent: 'Sitepull\r\nX-Test: injected' }).success).toBe(
+      false,
+    );
+    expect(CrawlConfigSchema.safeParse({ userAgent: '' }).success).toBe(false);
+    expect(CrawlConfigSchema.safeParse({ userAgent: 'x'.repeat(513) }).success).toBe(false);
   });
 
   it('rejects duplicate viewport names and unknown configuration keys', () => {
@@ -108,6 +122,43 @@ describe('crawl configuration contracts', () => {
 });
 
 describe('capture-relative path contracts', () => {
+  it('normalizes strict HTTP(S) proxy pools without accepting embedded secrets', () => {
+    expect(normalizeProxyServer(' HTTPS://Proxy.Example:443/ ')).toBe('https://proxy.example');
+    const parsed = ProxyPoolRequestSchema.parse({
+      entries: [
+        { server: 'http://proxy-a.example:8080' },
+        {
+          server: 'https://proxy-b.example:8443',
+          credentials: { username: 'capture-user', password: 'capture-secret' },
+        },
+      ],
+      selection: 'random',
+      jitter: { minMs: 100, maxMs: 500 },
+    });
+    expect(parsed.entries).toHaveLength(2);
+    expect(parsed.selection).toBe('random');
+
+    for (const server of [
+      'socks5://proxy.example:1080',
+      'http://user:secret@proxy.example',
+      'http://proxy.example/path',
+      'http://proxy.example?token=secret',
+    ]) {
+      expect(ProxyPoolRequestSchema.safeParse({ entries: [{ server }] }).success).toBe(false);
+    }
+    expect(
+      ProxyPoolRequestSchema.safeParse({
+        entries: [{ server: 'http://proxy.example' }, { server: 'http://proxy.example:80' }],
+      }).success,
+    ).toBe(false);
+    expect(
+      ProxyPoolRequestSchema.safeParse({
+        entries: [{ server: 'http://proxy.example' }],
+        jitter: { minMs: 501, maxMs: 500 },
+      }).success,
+    ).toBe(false);
+  });
+
   it.each([
     '../secrets.txt',
     'pages/../../secrets.txt',

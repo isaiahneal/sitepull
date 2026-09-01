@@ -618,6 +618,20 @@ export async function capturePage(input: CapturePageInput): Promise<CapturedPage
     const navigationHeaders = await navigation.allHeaders();
     const navigationType = navigationHeaders['content-type'] ?? '';
     const navigationStatus = navigation.status();
+    const proxyErrorCode = navigationHeaders['x-sitepull-proxy-error'];
+    if (
+      navigationStatus === 502 &&
+      navigationHeaders['x-sitepull-proxy'] === 'network-policy' &&
+      proxyErrorCode !== undefined
+    ) {
+      throw new SitepullError({
+        code: 'CRAWL_FAILED',
+        message: `Sitepull's upstream proxy could not reach ${input.url}.`,
+        stage: 'rendering',
+        retryable: false,
+        details: { status: navigationStatus, proxyErrorCode },
+      });
+    }
     if (isRetryableHttpStatus(navigationStatus)) {
       const retryAfter = navigationHeaders['retry-after'];
       const retryAfterMs = parseRetryAfterMs(retryAfter);

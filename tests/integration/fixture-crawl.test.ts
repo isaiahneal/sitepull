@@ -1,5 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { mkdir, readFile, readdir, rm } from 'node:fs/promises';
+import { createServer } from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -84,6 +85,98 @@ describe('deterministic fixture crawl', () => {
     expect(result.summary.sourceUrl).toBe(new URL(inferredHttpsUrl).href);
     expect(result.summary.normalizedUrl).toBe(new URL(fixtureUrl).href);
     expect(result.summary.counts.pages).toBe(1);
+  }, 30_000);
+
+  it('uses the configured User-Agent for browser and source-map requests and writes schema v2', async () => {
+    const customUserAgent = 'Sitepull-Integration-UA/0.5 (fixture)';
+    const observedUserAgents = new Map<string, string[]>();
+    const server = createServer((request, response) => {
+      const url = new URL(request.url ?? '/', 'http://127.0.0.1');
+      const observed = observedUserAgents.get(url.pathname) ?? [];
+      const userAgent = request.headers['user-agent'];
+      if (typeof userAgent === 'string') observed.push(userAgent);
+      observedUserAgents.set(url.pathname, observed);
+
+      response.setHeader('Cache-Control', 'no-store');
+      if (url.pathname === '/') {
+        response.setHeader('Content-Type', 'text/html; charset=utf-8');
+        response.end(
+          '<!doctype html><html><head><title>User-Agent fixture</title><script src="/app.js"></script></head><body><h1>User-Agent fixture</h1></body></html>',
+        );
+        return;
+      }
+      if (url.pathname === '/app.js') {
+        response.setHeader('Content-Type', 'text/javascript; charset=utf-8');
+        response.end(
+          'globalThis.sitepullUserAgentFixture = true;\n//# sourceMappingURL=/app.js.map\n',
+        );
+        return;
+      }
+      if (url.pathname === '/app.js.map') {
+        response.setHeader('Content-Type', 'application/json; charset=utf-8');
+        response.end(
+          JSON.stringify({ version: 3, file: 'app.js', sources: [], names: [], mappings: '' }),
+        );
+        return;
+      }
+      response.statusCode = 404;
+      response.setHeader('Content-Type', 'text/plain; charset=utf-8');
+      response.end('not found');
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(0, '127.0.0.1', resolve);
+    });
+    const address = server.address();
+    if (address === null || typeof address === 'string') {
+      throw new Error('User-Agent fixture did not expose a TCP port.');
+    }
+    const outputRoot = path.join(os.tmpdir(), `sitepull-user-agent-${crypto.randomUUID()}`);
+    roots.push(outputRoot);
+    await mkdir(outputRoot);
+
+    try {
+      const result = await runCapture(
+        {
+          url: `http://127.0.0.1:${address.port}/`,
+          outputDirectory: outputRoot,
+          config: {
+            engine: 'webkit',
+            maxDepth: 0,
+            maxPages: 1,
+            crawlConcurrency: 1,
+            pageTimeoutMs: 10_000,
+            userAgent: customUserAgent,
+            viewports: [{ name: 'desktop', width: 800, height: 600 }],
+          },
+        },
+        { allowPrivateHosts: true },
+      );
+
+      expect(observedUserAgents.get('/')).toContain(customUserAgent);
+      const sourceMapUserAgents = observedUserAgents.get('/app.js.map') ?? [];
+      expect(sourceMapUserAgents.length).toBeGreaterThan(0);
+      expect(sourceMapUserAgents.every((value) => value === customUserAgent)).toBe(true);
+      expect(
+        result.manifest.resources.find(
+          (resource) => new URL(resource.originalUrl).pathname === '/app.js.map',
+        ),
+      ).toMatchObject({ kind: 'source-map', captured: true });
+
+      const manifestJson: unknown = JSON.parse(
+        await readFile(path.join(result.outputDirectory, 'manifest.json'), 'utf8'),
+      );
+      const metadataJson: unknown = JSON.parse(
+        await readFile(path.join(result.outputDirectory, 'sitepull.json'), 'utf8'),
+      );
+      expect(result.manifest.schemaVersion).toBe(2);
+      expect(manifestJson).toMatchObject({ schemaVersion: 2 });
+      expect(metadataJson).toMatchObject({ schemaVersion: 2 });
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => (error ? reject(error) : resolve()));
+      });
+    }
   }, 30_000);
 
   it('captures hydrated routes, lazy DOM, resources, design evidence, screenshots, and a compact AI Pack', async () => {

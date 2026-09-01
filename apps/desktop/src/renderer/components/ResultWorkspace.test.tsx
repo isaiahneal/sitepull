@@ -93,6 +93,7 @@ describe('ResultWorkspace repeat capture action', () => {
       url: 'https://example.com/',
       allowHttpFallback: true,
       outputDirectory: '/tmp/sitepull',
+      proxyPool: null,
       config: {
         ...DEFAULT_CRAWL_CONFIG,
         maxPages: 60,

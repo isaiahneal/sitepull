@@ -1,4 +1,4 @@
-import type { CaptureResultSummary } from '@sitepull/contracts';
+import type { CaptureResultSummary, ProxyPoolRequest } from '@sitepull/contracts';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -77,6 +77,90 @@ describe('runCli', () => {
     });
     expect(cliRuntimeFromEnvironment({})).toEqual({});
     expect(cliRuntimeFromEnvironment({ SITEPULL_HEADLESS_ONLY: '0' })).toEqual({});
+  });
+
+  it('captures and scrubs proxy credential variables before a browser child can inherit them', () => {
+    const environment: Record<string, string | undefined> = {
+      SITEPULL_PROXY_USERNAME: 'alias-user',
+      SITEPULL_PROXY_PASSWORD: 'alias-password',
+      SITEPULL_PROXY_2_USERNAME: 'second-user',
+      SITEPULL_PROXY_2_PASSWORD: 'second-password',
+      SITEPULL_PROXY_BAD_PASSWORD: 'invalid-but-still-secret',
+      UNRELATED_SECRET: 'leave-this-alone',
+    };
+
+    const runtime = cliRuntimeFromEnvironment(environment);
+
+    expect(runtime.parseEnvironment?.proxyCredentialEnvironment).toEqual({
+      SITEPULL_PROXY_USERNAME: 'alias-user',
+      SITEPULL_PROXY_PASSWORD: 'alias-password',
+      SITEPULL_PROXY_2_USERNAME: 'second-user',
+      SITEPULL_PROXY_2_PASSWORD: 'second-password',
+      SITEPULL_PROXY_BAD_PASSWORD: 'invalid-but-still-secret',
+    });
+    expect(environment).toEqual({ UNRELATED_SECRET: 'leave-this-alone' });
+  });
+
+  it('forwards repeatable proxies and scrubbed indexed credentials without printing secrets', async () => {
+    const output = captureIo();
+    const environment: Record<string, string | undefined> = {
+      SITEPULL_PROXY_1_USERNAME: 'proxy-user',
+      SITEPULL_PROXY_1_PASSWORD: 'do-not-print-proxy-password',
+    };
+    const environmentRuntime = cliRuntimeFromEnvironment(environment);
+    let observedProxyPool: ProxyPoolRequest | undefined;
+    const dependencies: PullDependencies = {
+      ...successfulDependencies(),
+      runCapture: (_input, options) => {
+        observedProxyPool = options?.proxyPool;
+        expect(environment.SITEPULL_PROXY_1_USERNAME).toBeUndefined();
+        expect(environment.SITEPULL_PROXY_1_PASSWORD).toBeUndefined();
+        return Promise.resolve({
+          outputDirectory: '/captures/example.com',
+          summary: completedSummary(),
+        });
+      },
+    };
+
+    const exitCode = await runCli(
+      [
+        'node',
+        'sitepull',
+        'pull',
+        'example.com',
+        '--proxy',
+        'http://proxy-one.example:8080',
+        '--proxy',
+        'https://proxy-two.example:8443',
+        '--proxy-selection',
+        'random',
+        '--proxy-jitter',
+        '50:250',
+        '--user-agent',
+        'Sitepull Test UA/1.0',
+        '--quiet',
+      ],
+      {
+        ...environmentRuntime,
+        io: output.io,
+        pullDependencies: dependencies,
+      },
+    );
+
+    expect(exitCode).toBe(0);
+    expect(observedProxyPool).toEqual({
+      entries: [
+        {
+          server: 'http://proxy-one.example:8080',
+          credentials: { username: 'proxy-user', password: 'do-not-print-proxy-password' },
+        },
+        { server: 'https://proxy-two.example:8443' },
+      ],
+      selection: 'random',
+      jitter: { minMs: 50, maxMs: 250 },
+    });
+    expect(output.stdout()).toBe('/captures/example.com\n');
+    expect(output.stderr()).not.toContain('do-not-print-proxy-password');
   });
 
   it('prints only the final path to stdout in quiet mode', async () => {
@@ -265,9 +349,13 @@ describe('runCli', () => {
     expect(helpOutput.stdout()).toContain('pull <url>');
     expect(pullHelpOutput.stdout()).toContain('--ai-pack');
     expect(pullHelpOutput.stdout()).toContain('--headless');
+    expect(pullHelpOutput.stdout()).toContain('--proxy <url>');
+    expect(pullHelpOutput.stdout()).toContain('--proxy-selection <mode>');
+    expect(pullHelpOutput.stdout()).toContain('--proxy-jitter <min:max>');
+    expect(pullHelpOutput.stdout()).toContain('--user-agent <value>');
     expect(pullHelpOutput.stdout()).toContain('sitepull pull example.com');
-    expect(SITEPULL_VERSION).toBe('0.4.1');
-    expect(versionOutput.stdout()).toContain('sitepull/0.4.1');
+    expect(SITEPULL_VERSION).toBe('0.5.0');
+    expect(versionOutput.stdout()).toContain('sitepull/0.5.0');
   });
 
   it('advertises only Chromium in system-browser package help', async () => {

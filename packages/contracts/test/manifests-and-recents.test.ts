@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   CaptureManifestSchema,
   CaptureRecipeSchema,
+  proxyPoolRecipeFromRequest,
   RecentsIndexSchema,
   RecentCaptureSchema,
 } from '../src/index.js';
@@ -176,6 +177,29 @@ describe('durable recents', () => {
     });
 
     expect(parsed.lastUsedRecipe).toEqual(recipe);
+  });
+
+  it('persists only a credential-free proxy recipe and reads legacy recipes as direct', () => {
+    const proxyPool = proxyPoolRecipeFromRequest({
+      entries: [
+        {
+          server: 'https://proxy.example:8443',
+          credentials: { username: 'sentinel-user', password: 'sentinel-password' },
+        },
+      ],
+      selection: 'round-robin',
+      jitter: { minMs: 25, maxMs: 75 },
+    });
+    const saved = CaptureRecipeSchema.parse({ ...recipe, proxyPool });
+    const serialized = JSON.stringify(saved);
+
+    expect(saved.proxyPool?.entries[0]).toEqual({
+      server: 'https://proxy.example:8443',
+      authenticationRequired: true,
+    });
+    expect(serialized).not.toContain('sentinel-user');
+    expect(serialized).not.toContain('sentinel-password');
+    expect(CaptureRecipeSchema.parse({ ...recipe, proxyPool: undefined }).proxyPool).toBeNull();
   });
 
   it('rejects duplicate capture records', () => {

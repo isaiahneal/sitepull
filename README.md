@@ -42,7 +42,7 @@ powershell -NoProfile -ExecutionPolicy Bypass `
   -File "$env:TEMP\sitepull-install.ps1"
 ```
 
-`ExecutionPolicy Bypass` applies only to that installer process; it does not change the machine's PowerShell policy. The quick installer installs the desktop application on macOS, Ubuntu, Debian, and Windows. On Fedora and Alpine it installs the native headless-only CLI globally as `sitepull`. Use `--dry-run` (PowerShell: `-DryRun`) to preview the exact selection without network or filesystem changes, or `--version 0.4.1` (PowerShell: `-Version 0.4.1`) to pin a release.
+`ExecutionPolicy Bypass` applies only to that installer process; it does not change the machine's PowerShell policy. The quick installer installs the desktop application on macOS, Ubuntu, Debian, and Windows. On Fedora and Alpine it installs the native headless-only CLI globally as `sitepull`. Use `--dry-run` (PowerShell: `-DryRun`) to preview the exact selection without network or filesystem changes, or `--version 0.5.0` (PowerShell: `-Version 0.5.0`) to pin a release.
 
 Prefer to install by hand? Every package, checksum, and provenance record remains available on the [GitHub Releases page](https://github.com/isaiahneal/sitepull/releases/latest). These are community builds without Apple Developer ID or Microsoft Authenticode signing; review [Distribution trust](#distribution-trust) for the operating-system prompts and verification options.
 
@@ -61,6 +61,8 @@ Prefer to install by hand? Every package, checksum, and provenance record remain
 - AI Pack and Full Capture ZIP exports from both the desktop app and the shared core engine
 - A native desktop inspector with searchable history, saved capture recipes, **Capture Again**, and Overview, Pages, Design, Components, Assets, Files, and Logs workspaces
 - A first-class, script-friendly CLI that is headless by default
+- Single- or multi-proxy outbound routing with ordered or random selection, bounded jitter, and ephemeral Basic credentials
+- A reproducible User-Agent string override through `--user-agent` or the desktop preset/custom picker
 
 WebKit is the default and bundled desktop rendering engine. Chromium and Firefox are optional for CLI/source-development captures when their Playwright browser packages are installed. The Fedora and Alpine native CLI packages instead use each distribution's maintained Chromium headless shell; those packages are headless-only and support the Chromium engine only.
 
@@ -78,7 +80,7 @@ Release packages are published on the [GitHub Releases page](https://github.com/
 
 Each desktop package contains its own Playwright WebKit runtime. Fedora and Alpine install `sitepull` globally at `/usr/bin/sitepull` and use the distribution's native Chromium headless-shell package, avoiding an unsupported Ubuntu/glibc browser transplant. Release artifacts are built and clean-install tested against their named operating system.
 
-The community `v0.4.1` artifacts are not backed by Apple Developer ID, Microsoft Authenticode, or a persistent Linux repository key. See [Distribution trust](#distribution-trust) before installing a release artifact.
+The community `v0.5.0` artifacts are not backed by Apple Developer ID, Microsoft Authenticode, or a persistent Linux repository key. See [Distribution trust](#distribution-trust) before installing a release artifact.
 
 ## Requirements
 
@@ -98,15 +100,15 @@ Chromium and Firefox are optional CLI/development engines and require their corr
 On Fedora 44, download the RPM from the current release and install it with DNF:
 
 ```bash
-sudo dnf install ./sitepull-cli-0.4.1-1.fc44.x86_64.rpm
+sudo dnf install ./sitepull-cli-0.5.0-1.fc44.x86_64.rpm
 sitepull pull example.com --headless --ai-pack --zip
 ```
 
 On Alpine 3.24, download both the APK and its release-specific public key. From a root shell (for example, `su -`, or `doas` when configured), install the attested key before the signed package:
 
 ```bash
-install -m 0644 sitepull-alpine-v0.4.1.rsa.pub /etc/apk/keys/
-apk add ./sitepull-cli-0.4.1-r0.apk
+install -m 0644 sitepull-alpine-v0.5.0.rsa.pub /etc/apk/keys/
+apk add ./sitepull-cli-0.5.0-r0.apk
 ```
 
 Then run Sitepull as your regular user:
@@ -180,6 +182,48 @@ sitepull pull example.com \
   --zip
 ```
 
+Proxy pool with ordered rotation and bounded connection jitter:
+
+```bash
+sitepull pull example.com \
+  --headless \
+  --proxy http://proxy-a.example:8080 \
+  --proxy https://proxy-b.example:8443 \
+  --proxy-selection round-robin \
+  --proxy-jitter 250:1250
+```
+
+Repeat `--proxy` to build a pool. Use `--proxy-selection random` for random selection; random mode may choose the same endpoint consecutively, while round-robin guarantees alternation. Selection and jitter apply to each new outbound connection, so browser keep-alive can carry multiple resources over one selected connection. Jitter is expressed as `minimum:maximum` milliseconds, defaults to `0:0`, and is bounded to 30 seconds.
+
+Proxy URLs must be explicit `http://` or `https://` authority-only URLs. Sitepull rejects embedded credentials, paths, queries, fragments, SOCKS, PAC files, and implicit system proxy discovery. A configured pool is fail-closed: if its selected endpoint fails, Sitepull does not leak the request over the machine's direct connection.
+
+For Basic authentication, keep secrets out of command arguments and literal shell-history entries. Number environment variables by the order of the repeated flags. This Bash/Zsh example reads one pair interactively without echoing the password:
+
+```bash
+printf 'Proxy 1 username: '
+IFS= read -r SITEPULL_PROXY_1_USERNAME
+printf 'Proxy 1 password: '
+IFS= read -rs SITEPULL_PROXY_1_PASSWORD
+printf '\n'
+export SITEPULL_PROXY_1_USERNAME SITEPULL_PROXY_1_PASSWORD
+
+sitepull pull example.com --proxy https://proxy-a.example:8443
+
+unset SITEPULL_PROXY_1_USERNAME SITEPULL_PROXY_1_PASSWORD
+```
+
+Repeat the numbered pair for additional authenticated proxies. For one proxy, `SITEPULL_PROXY_USERNAME` and `SITEPULL_PROXY_PASSWORD` are aliases for the first pair. Both values are required together. Sitepull captures and removes the credential variables from its own process environment before launching the browser, and it never writes them to recipes, recents, manifests, logs, events, AI context, errors, or exports. The parent shell retains exported variables, so unset them after the command as shown.
+
+Basic authentication is only Base64-encoded. Use an `https://` proxy endpoint whenever credentials are configured so the client-to-proxy hop is encrypted; an `http://` proxy exposes its Basic authorization header to observers on that network path.
+
+Override the User-Agent string manually when a capture requires one:
+
+```bash
+sitepull pull example.com --user-agent 'Sitepull-Compatible-Browser/1.0'
+```
+
+This changes the request header and `navigator.userAgent`. It is not full browser fingerprint emulation: Chromium User-Agent Client Hints and other engine/platform surfaces remain separate.
+
 Headless is the default. Use `--headed` when you intentionally want to watch the Playwright browser; `--headless` and `--headed` are mutually exclusive. The Fedora and Alpine native CLI packages are intentionally headless-only and reject `--headed`.
 
 Available options:
@@ -195,6 +239,10 @@ Available options:
 | `--headless`               | Explicitly run without a visible browser; the default |
 | `--headed`                 | Show the Playwright browser                           |
 | `--timeout <seconds>`      | Per-page timeout; defaults to `30`                    |
+| `--proxy <url>`            | HTTP(S) upstream proxy; repeat to create a pool       |
+| `--proxy-selection <mode>` | `round-robin` or `random`; defaults to `round-robin`  |
+| `--proxy-jitter <min:max>` | Per-connection delay range in milliseconds            |
+| `--user-agent <value>`     | Override the browser User-Agent string                |
 | `--zip`                    | Export a ZIP after capture                            |
 | `--ai-pack`                | With `--zip`, export the compact AI Pack              |
 | `--quiet`                  | Emit only the final artifact path                     |
@@ -205,7 +253,7 @@ Run `sitepull --help` for the complete command reference. Progress and summaries
 
 Run `pnpm dev`, enter a host or URL, adjust Advanced Settings if needed, and choose **Pull Site**. Sitepull reports real stage and counter events from the core engine rather than a simulated percentage. Cancellation stops the crawl and closes Playwright resources.
 
-Sitepull saves the complete effective recipe for each new capture: normalized URL behavior, output parent, crawl settings, resource limits, and viewport list. Recent captures are searchable by host or URL, and **Capture Again** preloads the exact saved recipe for review before starting a fresh timestamped capture. The last-used recipe is restored on the new-capture screen; legacy `v0.1.0` history remains readable but has no invented recipe.
+Sitepull saves the complete effective recipe for each new capture: normalized URL behavior, output parent, crawl settings, resource limits, viewport list, User-Agent string, and the non-secret proxy routing configuration. Recent captures are searchable by host or URL, and **Capture Again** preloads the exact saved recipe for review before starting a fresh timestamped capture. Proxy usernames and passwords are never saved and must be re-entered. The last-used recipe is restored on the new-capture screen; legacy `v0.1.0` history remains readable but has no invented recipe.
 
 While the application process remains open, the renderer reconciles capture state with a bounded main-process event snapshot on load and when the window regains focus. Replayed and live events are merged by capture ID and sequence, closing UI delivery races without claiming that an interrupted capture can resume after the application quits.
 
@@ -279,7 +327,7 @@ Crawled websites are hostile input.
 - The renderer cannot select arbitrary paths or invoke shell commands. Output parents are the default directory or explicitly authorized through a native picker.
 - Canonical path containment rejects traversal and symbolic-link escapes. Text previews, project trees, and screenshot delivery are size-bounded.
 - PNG screenshots are checked for valid dimensions and decoded-pixel limits both after capture and before renderer delivery.
-- Browser HTTP(S)/WebSocket traffic and native source-map downloads resolve through Sitepull, reject non-public address sets, and pin the validated addresses into the actual upstream sockets. WebRTC and WebTransport are disabled; WebKit page workers are also disabled because their network transports do not obey an HTTP proxy.
+- Browser HTTP(S)/WebSocket traffic and native source-map downloads resolve through Sitepull, reject non-public address sets, and pin the validated addresses into the actual upstream sockets. When a user proxy pool is configured, Sitepull sends only validated numeric destinations through the selected upstream and never falls back to direct egress. WebRTC and WebTransport are disabled; WebKit page workers are also disabled because their network transports do not obey an HTTP proxy.
 - Crawling is same-origin by default. Subdomains require opt-in; authentication, CAPTCHA, paywall, and access-control bypasses are intentionally out of scope.
 
 See [SECURITY.md](SECURITY.md) for vulnerability reporting.
@@ -332,12 +380,12 @@ Build every desktop target on its native operating system and architecture. The 
 
 Electron fuses harden every package. Local macOS packages are stripped of AppleDouble sidecars, re-signed ad hoc after fuse mutation, and verified for internal signature consistency both before and after DMG creation. The quick installer verifies that seal again before replacing an existing app. Ad-hoc signing is not an Apple Developer ID signature and cannot be notarized. The community artifacts do not claim hardened runtime, and Sitepull does not weaken the bundle with the disable-library-validation entitlement. A hardened-runtime, notarized macOS distribution requires an Apple Developer identity and notarization credentials.
 
-Windows packages likewise require an Authenticode certificate for publisher trust, and Linux packages require a persistent repository/package-signing workflow for durable publisher trust. Those private credentials are intentionally absent from this public repository and its `v0.4.1` community builds. The Alpine APK is signed by a release-specific key published beside it; verify the key's checksum and GitHub provenance before installing it. That key authenticates the matching release artifact, but it is not a long-lived Alpine repository identity.
+Windows packages likewise require an Authenticode certificate for publisher trust, and Linux packages require a persistent repository/package-signing workflow for durable publisher trust. Those private credentials are intentionally absent from this public repository and its `v0.5.0` community builds. The Alpine APK is signed by a release-specific key published beside it; verify the key's checksum and GitHub provenance before installing it. That key authenticates the matching release artifact, but it is not a long-lived Alpine repository identity.
 
 For tagged releases produced by the current workflow, GitHub Actions requires exactly fourteen native packages plus the two quick installers, generates `SHA256SUMS.txt`, verifies that it covers and matches all sixteen payloads before publication, and records Sigstore-backed SLSA provenance attestations for every release asset and for the checksum manifest itself. After downloading an asset, verify its provenance with GitHub CLI:
 
 ```bash
-gh attestation verify ./Sitepull-0.4.1-arm64.dmg \
+gh attestation verify ./Sitepull-0.5.0-arm64.dmg \
   --repo isaiahneal/sitepull \
   --signer-workflow isaiahneal/sitepull/.github/workflows/distribution.yml
 ```
@@ -349,15 +397,18 @@ An attestation proves which repository and workflow produced the exact bytes; it
 - Sitepull reconstructs public browser output; it cannot recover private repositories, server templates, unshipped assets, build configuration, or backend code.
 - Cross-origin stylesheet rules can be opaque to in-page CSS inspection, although delivered stylesheets may still be captured as resources.
 - Content behind login, anti-bot controls, CAPTCHAs, paywalls, or private-network hosts is currently intentionally unsupported.
+- Proxy pools provide explicit egress routing and pacing, not challenge solving or access-control bypass. HTTP 403 responses remain terminal instead of causing automatic identity cycling.
+- A custom User-Agent changes the string header and `navigator.userAgent`; it does not synchronize Chromium User-Agent Client Hints or create a complete browser/device fingerprint.
 - Playwright WebKit is useful for Safari-adjacent behavior, but it is not the Safari application.
 - Packaged desktop builds intentionally embed only WebKit; Chromium and Firefox remain optional CLI/source-development engines.
 - Packaged Linux desktops are targeted and clean-install tested on Ubuntu 24.04, Debian 12, and Debian 13 x64. Use the DEB named for the installed distribution; their WebKit ABIs and package dependencies are intentionally distinct. A generic Linux desktop ZIP is not published because an archive cannot safely install Electron's root-owned setuid sandbox helper.
 - Fedora 44 and Alpine 3.24 are supported by native x64 headless-only CLI packages backed by their maintained Chromium headless shells. They reject `--headed`, do not include the Electron desktop inspector, and do not claim WebKit/Safari fidelity or WebGL capture. Alpine's musl ABI cannot run the official Electron or Playwright WebKit binaries, while Fedora 44's ICU, JPEG, and media-library ABIs do not match Playwright's Ubuntu WebKit build.
 - WebKit page workers are disabled during capture so worker-only WebTransport cannot bypass the validated HTTP proxy. Sites that require dedicated/shared workers for rendering may lose that worker-driven behavior; Chromium and Firefox instead use engine-level non-proxied transport restrictions.
+- Node's system destination-DNS lookup has no hard cancellation API. Sitepull abandons an aborted request before opening a connection, but a stalled operating-system resolver call can delay final cleanup until that lookup returns.
 - Resource-body capture defaults to 25 MiB per response, 512 MiB across the capture, and three concurrent body reads. Responses without a trustworthy content length still require one complete in-memory Playwright buffer before their actual size can be enforced.
 - Responsive screenshots reuse one stabilized page and resize it through the configured viewports. DOM/computed-style evidence is extracted at the first configured viewport, so JavaScript or server behavior selected only during an initial viewport-specific load requires a separate capture.
 - Component names and semantic design roles are deterministic inferences. Raw measurements, frequencies, routes, and signatures remain available for downstream judgment.
-- Official publisher signing, macOS hardened runtime, and notarization are not configured for the public `v0.4.1` artifacts. GitHub attestations establish workflow provenance, not publisher identity.
+- Official publisher signing, macOS hardened runtime, and notarization are not configured for the public `v0.5.0` artifacts. GitHub attestations establish workflow provenance, not publisher identity.
 
 ## License
 

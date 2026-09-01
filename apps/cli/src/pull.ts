@@ -3,6 +3,7 @@ import type {
   CaptureResultSummary,
   CrawlConfigInput,
   ExportMode,
+  ProxyPoolRequest,
 } from '@sitepull/contracts';
 import { exportCaptureArchive, runCapture } from '@sitepull/core';
 
@@ -31,6 +32,7 @@ export interface PullDependencies {
       readonly signal?: AbortSignal;
       readonly onEvent?: (event: CaptureEvent) => void;
       readonly chromiumExecutablePath?: string;
+      readonly proxyPool?: ProxyPoolRequest;
     },
   ) => Promise<CaptureExecutionResult>;
   readonly exportCaptureArchive: (options: {
@@ -71,6 +73,7 @@ export async function executePull(
       signal,
       onEvent: (event) => reporter.onEvent(event),
       ...(chromiumExecutablePath === undefined ? {} : { chromiumExecutablePath }),
+      ...(command.proxyPool === null ? {} : { proxyPool: command.proxyPool }),
     },
   );
 

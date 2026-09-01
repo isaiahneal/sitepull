@@ -7,6 +7,7 @@ export * from './ipc.js';
 export * from './manifests.js';
 export * from './pages.js';
 export * from './primitives.js';
+export * from './proxy.js';
 export * from './recents.js';
 export * from './resources.js';
 export * from './results.js';

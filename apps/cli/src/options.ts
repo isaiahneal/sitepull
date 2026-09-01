@@ -4,11 +4,18 @@ import path from 'node:path';
 import {
   BrowserEngineSchema,
   CrawlRequestSchema,
+  MAX_PROXY_JITTER_MS,
+  MAX_PROXY_POOL_ENTRIES,
+  ProxyPoolRequestSchema,
+  ProxySelectionModeSchema,
   normalizeHttpUrlInput,
   VIEWPORT_PRESETS,
   type CrawlRequest,
   type BrowserEngine,
   type ExportMode,
+  type ProxyJitter,
+  type ProxyPoolRequest,
+  type ProxySelectionMode,
   type Viewport,
 } from '@sitepull/contracts';
 
@@ -22,6 +29,10 @@ export interface RawPullOptions extends Readonly<Record<string, unknown>> {
   readonly headed?: unknown;
   readonly headless?: unknown;
   readonly timeout?: unknown;
+  readonly proxy?: unknown;
+  readonly proxySelection?: unknown;
+  readonly proxyJitter?: unknown;
+  readonly userAgent?: unknown;
   readonly zip?: unknown;
   readonly aiPack?: unknown;
   readonly quiet?: unknown;
@@ -30,6 +41,7 @@ export interface RawPullOptions extends Readonly<Record<string, unknown>> {
 export interface ParsedPullCommand {
   readonly request: CrawlRequest;
   readonly allowHttpFallback: boolean;
+  readonly proxyPool: ProxyPoolRequest | null;
   readonly exportMode: ExportMode | null;
   readonly quiet: boolean;
 }
@@ -40,6 +52,8 @@ export interface ParseEnvironment {
   readonly defaultEngine?: BrowserEngine;
   readonly supportedEngines?: readonly BrowserEngine[];
   readonly headlessOnly?: boolean;
+  /** Proxy-only environment values captured and removed from the child-process environment. */
+  readonly proxyCredentialEnvironment?: Readonly<Record<string, string>>;
 }
 
 export class UsageError extends Error {
@@ -80,6 +94,20 @@ function optionalInteger(value: unknown, option: string): number | undefined {
   const parsed = Number(text);
   if (!Number.isSafeInteger(parsed)) throw new UsageError(`${option} must be an integer.`);
   return parsed;
+}
+
+function repeatedStrings(value: unknown, option: string): string[] {
+  if (value === undefined) return [];
+  const values = Array.isArray(value) ? value : [value];
+  if (values.length === 0) throw new UsageError(`${option} requires a value.`);
+  return values.map((entry) => {
+    if (typeof entry !== 'string' && typeof entry !== 'number') {
+      throw new UsageError(`${option} requires a value.`);
+    }
+    const text = String(entry).trim();
+    if (text === '') throw new UsageError(`${option} requires a non-empty value.`);
+    return text;
+  });
 }
 
 function parseEngine(value: unknown): 'webkit' | 'chromium' | 'firefox' | undefined {
@@ -130,6 +158,134 @@ function parseTimeoutMilliseconds(value: unknown): number | undefined {
     throw new UsageError('--timeout supports at most millisecond precision.');
   }
   return milliseconds;
+}
+
+function parseProxySelection(value: unknown): ProxySelectionMode | undefined {
+  const input = optionalString(value, '--proxy-selection');
+  if (input === undefined) return undefined;
+  const parsed = ProxySelectionModeSchema.safeParse(input.toLowerCase());
+  if (!parsed.success) {
+    throw new UsageError('--proxy-selection must be round-robin or random.');
+  }
+  return parsed.data;
+}
+
+function parseProxyJitter(value: unknown): ProxyJitter | undefined {
+  const input = optionalString(value, '--proxy-jitter');
+  if (input === undefined) return undefined;
+  const match = /^(\d+):(\d+)$/u.exec(input);
+  if (match?.[1] === undefined || match[2] === undefined) {
+    throw new UsageError('--proxy-jitter must use min:max milliseconds, for example 250:1200.');
+  }
+  const minMs = Number(match[1]);
+  const maxMs = Number(match[2]);
+  if (!Number.isSafeInteger(minMs) || !Number.isSafeInteger(maxMs)) {
+    throw new UsageError('--proxy-jitter values must be safe integers.');
+  }
+  if (minMs > maxMs) {
+    throw new UsageError('--proxy-jitter minimum cannot exceed its maximum.');
+  }
+  if (maxMs > MAX_PROXY_JITTER_MS) {
+    throw new UsageError(
+      `--proxy-jitter values must be between 0 and ${MAX_PROXY_JITTER_MS} milliseconds.`,
+    );
+  }
+  return { minMs, maxMs };
+}
+
+function proxyCredentialPairs(
+  values: Readonly<Record<string, string>>,
+  proxyCount: number,
+): ReadonlyMap<number, Readonly<{ username: string; password: string }>> {
+  const pairs = new Map<number, { username?: string; password?: string }>();
+  const unnumbered: { username?: string; password?: string } = {};
+
+  for (const [name, value] of Object.entries(values)) {
+    if (name === 'SITEPULL_PROXY_USERNAME') {
+      unnumbered.username = value;
+      continue;
+    }
+    if (name === 'SITEPULL_PROXY_PASSWORD') {
+      unnumbered.password = value;
+      continue;
+    }
+
+    const match = /^SITEPULL_PROXY_(.+)_(USERNAME|PASSWORD)$/u.exec(name);
+    if (match?.[1] === undefined || match[2] === undefined || !/^[1-9]\d*$/u.test(match[1])) {
+      throw new UsageError(`Invalid proxy credential environment variable ${name}.`);
+    }
+    const index = Number(match[1]);
+    if (!Number.isSafeInteger(index) || index > MAX_PROXY_POOL_ENTRIES) {
+      throw new UsageError(
+        `${name} uses a proxy index outside the supported range 1-${MAX_PROXY_POOL_ENTRIES}.`,
+      );
+    }
+    const pair = pairs.get(index) ?? {};
+    if (match[2] === 'USERNAME') pair.username = value;
+    else pair.password = value;
+    pairs.set(index, pair);
+  }
+
+  if (proxyCount === 0 && (pairs.size > 0 || Object.keys(unnumbered).length > 0)) {
+    throw new UsageError('Proxy credentials were supplied but no --proxy was configured.');
+  }
+  if ((unnumbered.username !== undefined || unnumbered.password !== undefined) && pairs.has(1)) {
+    throw new UsageError(
+      'Use either unnumbered proxy credentials or SITEPULL_PROXY_1_USERNAME/PASSWORD, not both.',
+    );
+  }
+  if (unnumbered.username !== undefined || unnumbered.password !== undefined) {
+    pairs.set(1, unnumbered);
+  }
+
+  const complete = new Map<number, { username: string; password: string }>();
+  for (const [index, pair] of pairs) {
+    if (index > proxyCount) {
+      throw new UsageError(`Proxy credentials for index ${index} do not have a matching --proxy.`);
+    }
+    if (pair.username === undefined || pair.password === undefined) {
+      throw new UsageError(
+        `Proxy credentials for index ${index} require both USERNAME and PASSWORD variables.`,
+      );
+    }
+    complete.set(index, { username: pair.username, password: pair.password });
+  }
+  return complete;
+}
+
+function parseProxyPool(
+  options: RawPullOptions,
+  environment: ParseEnvironment,
+): ProxyPoolRequest | null {
+  const servers = repeatedStrings(options.proxy, '--proxy');
+  const selection = parseProxySelection(options.proxySelection);
+  const jitter = parseProxyJitter(options.proxyJitter);
+  if (servers.length === 0) {
+    if (selection !== undefined) {
+      throw new UsageError('--proxy-selection requires at least one --proxy.');
+    }
+    if (jitter !== undefined) throw new UsageError('--proxy-jitter requires at least one --proxy.');
+  }
+
+  const credentials = proxyCredentialPairs(
+    environment.proxyCredentialEnvironment ?? {},
+    servers.length,
+  );
+  if (servers.length === 0) return null;
+
+  const parsed = ProxyPoolRequestSchema.safeParse({
+    entries: servers.map((server, offset) => {
+      const pair = credentials.get(offset + 1);
+      return {
+        server,
+        ...(pair === undefined ? {} : { credentials: pair }),
+      };
+    }),
+    selection: selection ?? 'round-robin',
+    jitter: jitter ?? { minMs: 0, maxMs: 0 },
+  });
+  if (!parsed.success) throw new UsageError(formatContractError(parsed.error));
+  return parsed.data;
 }
 
 function expandOutputPath(input: string, homeDirectory: string, currentDirectory: string): string {
@@ -194,6 +350,8 @@ export function parsePullCommand(
   }
   const viewports = parseViewports(options.viewports);
   const pageTimeoutMs = parseTimeoutMilliseconds(options.timeout);
+  const proxyPool = parseProxyPool(options, environment);
+  const userAgent = optionalString(options.userAgent, '--user-agent');
   const includeSubdomains = optionalBoolean(options.includeSubdomains, '--include-subdomains');
   const headed = optionalBoolean(options.headed, '--headed');
   const headless = optionalBoolean(options.headless, '--headless');
@@ -218,6 +376,7 @@ export function parsePullCommand(
       ...(engine === undefined ? {} : { engine }),
       ...(viewports === undefined ? {} : { viewports }),
       ...(pageTimeoutMs === undefined ? {} : { pageTimeoutMs }),
+      ...(userAgent === undefined ? {} : { userAgent }),
       includeSubdomains,
       headed,
     },
@@ -227,6 +386,7 @@ export function parsePullCommand(
   return {
     request: request.data,
     allowHttpFallback: normalizedInput.protocolInferred,
+    proxyPool,
     exportMode: zip ? (aiPack ? 'ai-pack' : 'full-capture') : null,
     quiet,
   };

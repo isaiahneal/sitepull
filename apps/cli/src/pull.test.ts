@@ -106,6 +106,54 @@ describe('executePull', () => {
     expect(receivedFallbackPolicy).toBe(true);
   });
 
+  it('passes the proxy pool through RunCaptureOptions and the custom UA through config', async () => {
+    let receivedOptions: Parameters<PullDependencies['runCapture']>[1];
+    let receivedUserAgent: string | null | undefined;
+    const dependencies: PullDependencies = {
+      runCapture: (input, options) => {
+        receivedOptions = options;
+        receivedUserAgent = input.config?.userAgent;
+        return Promise.resolve({
+          outputDirectory: '/captures/example.com-2026-08-30',
+          summary: summary(),
+        });
+      },
+      exportCaptureArchive: () =>
+        Promise.resolve({ archivePath: '/unexpected.zip', compressedBytes: 1 }),
+    };
+    const command = parsePullCommand(
+      'example.com',
+      {
+        proxy: ['http://proxy-one.example:8080', 'https://proxy-two.example:8443'],
+        proxySelection: 'random',
+        proxyJitter: '25:125',
+        userAgent: 'Sitepull Custom UA/1.0',
+        quiet: true,
+      },
+      {
+        proxyCredentialEnvironment: {
+          SITEPULL_PROXY_2_USERNAME: 'proxy-user',
+          SITEPULL_PROXY_2_PASSWORD: 'proxy-password',
+        },
+      },
+    );
+
+    await executePull(command, new AbortController().signal, () => undefined, dependencies);
+
+    expect(receivedUserAgent).toBe('Sitepull Custom UA/1.0');
+    expect(receivedOptions?.proxyPool).toEqual({
+      entries: [
+        { server: 'http://proxy-one.example:8080' },
+        {
+          server: 'https://proxy-two.example:8443',
+          credentials: { username: 'proxy-user', password: 'proxy-password' },
+        },
+      ],
+      selection: 'random',
+      jitter: { minMs: 25, maxMs: 125 },
+    });
+  });
+
   it('returns the capture directory without invoking export when --zip is absent', async () => {
     let exported = false;
     const dependencies: PullDependencies = {

@@ -5,6 +5,7 @@ import {
   SITEPULL_IPC_CHANNELS,
   type CaptureEvent,
   type CaptureResultSummary,
+  type ProxyPoolRequest,
 } from '@sitepull/contracts';
 import type { CaptureRunResult, RunCaptureOptions } from '@sitepull/core';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -102,6 +103,55 @@ describe('CaptureJobManager owner reconciliation', () => {
   beforeEach(() => {
     core.runCapture.mockReset();
     core.directoryByteSize.mockClear();
+  });
+
+  it('passes credentials only to the runtime and exposes a sanitized proxy recipe', async () => {
+    const captureId = 'capture-proxied';
+    const run = deferred<CaptureRunResult>();
+    let runtimeProxyPool: ProxyPoolRequest | undefined;
+    core.runCapture.mockImplementation((_input: unknown, options: RunCaptureOptions) => {
+      runtimeProxyPool = options.proxyPool;
+      options.onEvent?.(logEvent(captureId, 0));
+      return run.promise;
+    });
+    const { registry, recents } = services();
+    const manager = new CaptureJobManager(registry, recents);
+    const renderer = owner(35);
+    const password = 'runtime-only-password';
+
+    const started = await manager.start(
+      {
+        url: 'https://example.com/',
+        config: DEFAULT_CRAWL_CONFIG,
+        proxyPool: {
+          entries: [
+            {
+              server: 'http://proxy.example:8080',
+              credentials: { username: 'alice', password },
+            },
+          ],
+          selection: 'random',
+          jitter: { minMs: 25, maxMs: 100 },
+        },
+      },
+      '/tmp/sitepull',
+      renderer.webContents,
+    );
+
+    expect(runtimeProxyPool?.entries[0]?.credentials?.password).toBe(password);
+    expect(started.recipe.proxyPool).toEqual({
+      entries: [{ server: 'http://proxy.example:8080', authenticationRequired: true }],
+      selection: 'random',
+      jitter: { minMs: 25, maxMs: 100 },
+    });
+    expect(JSON.stringify(started.recipe)).not.toContain(password);
+    expect(JSON.stringify(manager.snapshotForOwner(renderer.webContents.id))).not.toContain(
+      password,
+    );
+    expect(JSON.stringify(vi.mocked(recents).rememberRecipe.mock.calls)).not.toContain(password);
+
+    run.reject(new Error('Fixture capture stopped.'));
+    await manager.whenIdle();
   });
 
   it('retains a bounded monotonic replay only for the renderer that owns the job', async () => {

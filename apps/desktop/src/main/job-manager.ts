@@ -4,6 +4,7 @@ import {
   CaptureRecipeSchema,
   CaptureEventSchema,
   CaptureJobSnapshotSchema,
+  proxyPoolRecipeFromRequest,
   StartCaptureResultSchema,
   SITEPULL_IPC_CHANNELS,
   type CaptureCompleteEvent,
@@ -101,6 +102,8 @@ export class CaptureJobManager {
       allowHttpFallback: payload.allowHttpFallback ?? false,
       outputDirectory,
       config: payload.config ?? {},
+      proxyPool:
+        payload.proxyPool === undefined ? null : proxyPoolRecipeFromRequest(payload.proxyPool),
     });
     this.#latestTerminalByOwner.delete(owner.id);
     const firstEvent = deferred<string>();
@@ -134,6 +137,7 @@ export class CaptureJobManager {
         },
         {
           signal: job.controller.signal,
+          ...(payload.proxyPool === undefined ? {} : { proxyPool: payload.proxyPool }),
           onEvent: (event) => {
             const parsedEvent = CaptureEventSchema.parse(event);
             if (job.captureId === null) {

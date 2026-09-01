@@ -26,14 +26,37 @@ export interface CliRuntime {
   readonly chromiumExecutablePath?: string;
 }
 
+function isProxyCredentialVariable(name: string): boolean {
+  return (
+    name === 'SITEPULL_PROXY_USERNAME' ||
+    name === 'SITEPULL_PROXY_PASSWORD' ||
+    /^SITEPULL_PROXY_.+_(?:USERNAME|PASSWORD)$/u.test(name)
+  );
+}
+
+/** Captures proxy credentials for validation, then removes them before Playwright can inherit them. */
+export function captureAndScrubProxyCredentialEnvironment(
+  environment: Readonly<Record<string, string | undefined>>,
+): Readonly<Record<string, string>> {
+  const captured: Record<string, string> = {};
+  for (const [name, value] of Object.entries(environment)) {
+    if (value === undefined || !isProxyCredentialVariable(name)) continue;
+    captured[name] = value;
+    Reflect.deleteProperty(environment, name);
+  }
+  return captured;
+}
+
 export function cliRuntimeFromEnvironment(
   environment: Readonly<Record<string, string | undefined>> = process.env,
 ): CliRuntime {
   const systemChromiumPath = environment.SITEPULL_SYSTEM_CHROMIUM?.trim();
   const usesSystemChromium = systemChromiumPath !== undefined && systemChromiumPath !== '';
   const headlessOnly = environment.SITEPULL_HEADLESS_ONLY?.trim() === '1';
+  const proxyCredentialEnvironment = captureAndScrubProxyCredentialEnvironment(environment);
+  const hasProxyCredentials = Object.keys(proxyCredentialEnvironment).length > 0;
 
-  if (!usesSystemChromium && !headlessOnly) return {};
+  if (!usesSystemChromium && !headlessOnly && !hasProxyCredentials) return {};
   return {
     ...(usesSystemChromium ? { chromiumExecutablePath: systemChromiumPath } : {}),
     parseEnvironment: {
@@ -44,6 +67,7 @@ export function cliRuntimeFromEnvironment(
           }
         : {}),
       ...(headlessOnly ? { headlessOnly: true } : {}),
+      ...(hasProxyCredentials ? { proxyCredentialEnvironment } : {}),
     },
   };
 }
@@ -118,12 +142,25 @@ function configureCli(
     )
     .option('--headless', 'Run without a visible browser window (the default)')
     .option('--timeout <seconds>', 'Per-page timeout in seconds (default: 30)')
+    .option('--proxy <url>', 'Upstream HTTP(S) proxy; repeat to create a proxy pool')
+    .option(
+      '--proxy-selection <mode>',
+      'Proxy pool selection: round-robin or random (default: round-robin)',
+    )
+    .option(
+      '--proxy-jitter <min:max>',
+      'Random delay before new outbound connections in milliseconds (default: 0:0)',
+    )
+    .option('--user-agent <value>', 'Custom browser User-Agent string')
     .option('--zip', 'Export a ZIP after capture')
     .option('--ai-pack', 'With --zip, export the compact AI Pack instead of the full capture')
     .option('--quiet', 'Suppress progress and the human-readable summary')
     .example('  sitepull pull example.com')
     .example(
       '  sitepull pull example.com --headless --depth 2 --max-pages 25 --viewports desktop,mobile --ai-pack --zip',
+    )
+    .example(
+      '  sitepull pull example.com --proxy http://proxy-a:8080 --proxy http://proxy-b:8080 --proxy-selection random --proxy-jitter 250:1200',
     )
     .action(action);
   cli.help();

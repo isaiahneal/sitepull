@@ -1,9 +1,15 @@
 import { Collapsible } from '@base-ui/react/collapsible';
 import {
+  CrawlConfigSchema,
   DEFAULT_CRAWL_CONFIG,
+  MAX_PROXY_POOL_ENTRIES,
+  ProxyPoolRequestSchema,
   VIEWPORT_PRESETS,
   type CaptureRecipe,
   type CrawlConfig,
+  type ProxyPoolRecipe,
+  type ProxyPoolRequest,
+  type ProxySelectionMode,
   type RecentCapture,
 } from '@sitepull/contracts';
 import {
@@ -14,15 +20,25 @@ import {
   Folder,
   Globe2,
   History,
+  KeyRound,
+  Network,
+  Plus,
   RotateCw,
   Search,
   Settings2,
   ShieldCheck,
+  Trash2,
 } from 'lucide-react';
 import type { FormEvent } from 'react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 
 import type { SitepullController } from '../hooks/use-sitepull.js';
+import {
+  USER_AGENT_PRESETS,
+  userAgentChoice,
+  userAgentChoiceLabel,
+  type UserAgentChoice,
+} from '../lib/user-agent-presets.js';
 import { cn, formatBytes, normalizeUrlRequestInput, relativeTime } from '../lib/utils.js';
 import { Button } from './ui/button.js';
 import { Input } from './ui/input.js';
@@ -36,6 +52,65 @@ function freshConfig(source: CrawlConfig = DEFAULT_CRAWL_CONFIG): CrawlConfig {
     ...source,
     viewports: source.viewports.map((viewport) => ({ ...viewport })),
   };
+}
+
+interface ProxyEndpointDraft {
+  readonly id: string;
+  readonly server: string;
+  readonly authenticationRequired: boolean;
+  readonly username: string;
+  readonly password: string;
+}
+
+interface ProxyPoolDraft {
+  readonly enabled: boolean;
+  readonly entries: readonly ProxyEndpointDraft[];
+  readonly selection: ProxySelectionMode;
+  readonly jitterMinMs: number;
+  readonly jitterMaxMs: number;
+}
+
+let proxyDraftIdentifier = 0;
+
+function proxyEntryDraft(
+  source: Partial<Pick<ProxyEndpointDraft, 'server' | 'authenticationRequired'>> = {},
+): ProxyEndpointDraft {
+  proxyDraftIdentifier += 1;
+  return {
+    id: `proxy-entry-${proxyDraftIdentifier}`,
+    server: source.server ?? '',
+    authenticationRequired: source.authenticationRequired ?? false,
+    username: '',
+    password: '',
+  };
+}
+
+function proxyPoolDraft(recipe: ProxyPoolRecipe | null | undefined): ProxyPoolDraft {
+  if (recipe === null || recipe === undefined) {
+    return {
+      enabled: false,
+      entries: [proxyEntryDraft()],
+      selection: 'round-robin',
+      jitterMinMs: 0,
+      jitterMaxMs: 0,
+    };
+  }
+  return {
+    enabled: true,
+    entries: recipe.entries.map((entry) => proxyEntryDraft(entry)),
+    selection: recipe.selection,
+    jitterMinMs: recipe.jitter.minMs,
+    jitterMaxMs: recipe.jitter.maxMs,
+  };
+}
+
+function firstContractIssue(error: {
+  readonly issues: readonly { readonly path: readonly PropertyKey[]; readonly message: string }[];
+}): string {
+  const issue = error.issues[0];
+  if (issue === undefined) return 'Review the Advanced Settings values.';
+  const location = issue.path.length === 0 ? '' : `${issue.path.map(String).join('.')}: `;
+  return `${location}${issue.message}`;
 }
 
 export function EmptyState({ controller }: EmptyStateProps) {
@@ -56,6 +131,17 @@ export function EmptyState({ controller }: EmptyStateProps) {
     initialRecipe?.allowHttpFallback,
   );
   const [config, setConfig] = useState<CrawlConfig>(() => freshConfig(initialRecipe?.config));
+  const [userAgentSelection, setUserAgentSelection] = useState<UserAgentChoice>(() =>
+    userAgentChoice(initialRecipe?.config.userAgent ?? null),
+  );
+  const [customUserAgent, setCustomUserAgent] = useState(() =>
+    userAgentChoice(initialRecipe?.config.userAgent ?? null) === 'custom'
+      ? (initialRecipe?.config.userAgent ?? '')
+      : '',
+  );
+  const [proxyPool, setProxyPool] = useState<ProxyPoolDraft>(() =>
+    proxyPoolDraft(initialRecipe?.proxyPool),
+  );
   const [urlError, setUrlError] = useState<string | null>(null);
   const [settingsError, setSettingsError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -76,6 +162,12 @@ export function EmptyState({ controller }: EmptyStateProps) {
     setOutputDirectory(recipeToApply.outputDirectory);
     setAllowHttpFallback(recipeToApply.allowHttpFallback);
     setConfig(freshConfig(recipeToApply.config));
+    const nextUserAgentSelection = userAgentChoice(recipeToApply.config.userAgent);
+    setUserAgentSelection(nextUserAgentSelection);
+    setCustomUserAgent(
+      nextUserAgentSelection === 'custom' ? (recipeToApply.config.userAgent ?? '') : '',
+    );
+    setProxyPool(proxyPoolDraft(recipeToApply.proxyPool));
     setUrlError(null);
     setSettingsError(null);
     if (model.draftRecipe !== null) {
@@ -91,6 +183,9 @@ export function EmptyState({ controller }: EmptyStateProps) {
         .join(' + '),
     [config.viewports],
   );
+  const proxySummary = proxyPool.enabled
+    ? `${proxyPool.entries.length} ${proxyPool.entries.length === 1 ? 'proxy' : 'proxies'} · ${proxyPool.selection === 'random' ? 'Random' : 'Round robin'}`
+    : 'Direct connection';
 
   const filteredRecents = useMemo(() => {
     const needle = recentQuery.trim().toLowerCase();
@@ -114,18 +209,69 @@ export function EmptyState({ controller }: EmptyStateProps) {
 
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    let normalizedInput: ReturnType<typeof normalizeUrlRequestInput>;
     try {
-      const normalizedInput = normalizeUrlRequestInput(url);
+      normalizedInput = normalizeUrlRequestInput(url);
       setUrlError(null);
-      setSubmitting(true);
+    } catch (error) {
+      setUrlError(error instanceof Error ? error.message : 'Enter a valid website URL.');
+      return;
+    }
+
+    const selectedPreset = USER_AGENT_PRESETS.find((preset) => preset.id === userAgentSelection);
+    const effectiveUserAgent =
+      userAgentSelection === 'browser-default'
+        ? null
+        : userAgentSelection === 'custom'
+          ? customUserAgent
+          : (selectedPreset?.value ?? null);
+    const parsedConfig = CrawlConfigSchema.safeParse({
+      ...config,
+      userAgent: effectiveUserAgent,
+    });
+    if (!parsedConfig.success) {
+      setSettingsError(firstContractIssue(parsedConfig.error));
+      return;
+    }
+
+    let parsedProxyPool: ProxyPoolRequest | undefined;
+    if (proxyPool.enabled) {
+      const candidate = ProxyPoolRequestSchema.safeParse({
+        entries: proxyPool.entries.map((entry) => ({
+          server: entry.server,
+          ...(entry.authenticationRequired
+            ? { credentials: { username: entry.username, password: entry.password } }
+            : {}),
+        })),
+        selection: proxyPool.selection,
+        jitter: { minMs: proxyPool.jitterMinMs, maxMs: proxyPool.jitterMaxMs },
+      });
+      if (!candidate.success) {
+        const authMissing = proxyPool.entries.some(
+          (entry) =>
+            entry.authenticationRequired && (entry.username.trim() === '' || entry.password === ''),
+        );
+        setSettingsError(
+          authMissing
+            ? 'Re-enter the username and password for every authenticated proxy. Credentials are never saved.'
+            : firstContractIssue(candidate.error),
+        );
+        return;
+      }
+      parsedProxyPool = candidate.data;
+    }
+
+    setSettingsError(null);
+    setSubmitting(true);
+    try {
       await startCapture({
         url: normalizedInput.url,
         allowHttpFallback: allowHttpFallback ?? normalizedInput.protocolInferred,
-        config,
+        config: parsedConfig.data,
         ...(outputDirectory ? { outputDirectory } : {}),
+        ...(parsedProxyPool === undefined ? {} : { proxyPool: parsedProxyPool }),
       });
-    } catch (error) {
-      setUrlError(error instanceof Error ? error.message : 'Enter a valid website URL.');
+    } catch {
       setSubmitting(false);
     }
   };
@@ -241,6 +387,8 @@ export function EmptyState({ controller }: EmptyStateProps) {
                   <span>Depth {config.maxDepth}</span>
                   <span>Max {config.maxPages} pages</span>
                   <span>{viewportLabel}</span>
+                  <span>{userAgentChoiceLabel(userAgentSelection)}</span>
+                  <span>{proxySummary}</span>
                 </div>
                 <Collapsible.Trigger className="settings-trigger flex items-center gap-1.5 rounded-md px-2 py-1 text-[11px] font-medium text-zinc-500 outline-none transition-colors hover:bg-white/[0.05] hover:text-zinc-200 focus-visible:ring-2 focus-visible:ring-blue-400/50">
                   <Settings2 className="size-3.5" />
@@ -251,11 +399,45 @@ export function EmptyState({ controller }: EmptyStateProps) {
               <Collapsible.Panel className="collapsible-panel overflow-hidden">
                 <AdvancedSettings
                   config={config}
+                  userAgentSelection={userAgentSelection}
+                  customUserAgent={customUserAgent}
+                  proxyPool={proxyPool}
                   outputDirectory={outputDirectory}
                   outputError={settingsError}
                   onConfigChange={(nextConfig) => {
                     formTouchedRef.current = true;
                     setConfig(nextConfig);
+                  }}
+                  onUserAgentSelectionChange={(selection) => {
+                    formTouchedRef.current = true;
+                    setUserAgentSelection(selection);
+                    if (selection === 'browser-default') {
+                      setConfig((current) => ({ ...current, userAgent: null }));
+                      return;
+                    }
+                    if (selection === 'custom') {
+                      setConfig((current) => ({
+                        ...current,
+                        userAgent: customUserAgent.trim() === '' ? null : customUserAgent,
+                      }));
+                      return;
+                    }
+                    const preset = USER_AGENT_PRESETS.find((entry) => entry.id === selection);
+                    setConfig((current) => ({
+                      ...current,
+                      userAgent: preset?.value ?? null,
+                    }));
+                  }}
+                  onCustomUserAgentChange={(value) => {
+                    formTouchedRef.current = true;
+                    setCustomUserAgent(value);
+                    setConfig((current) => ({ ...current, userAgent: value }));
+                    if (settingsError) setSettingsError(null);
+                  }}
+                  onProxyPoolChange={(nextProxyPool) => {
+                    formTouchedRef.current = true;
+                    setProxyPool(nextProxyPool);
+                    if (settingsError) setSettingsError(null);
                   }}
                   onChooseOutput={() => void chooseOutput()}
                   onClearOutput={() => {
@@ -357,18 +539,30 @@ export function EmptyState({ controller }: EmptyStateProps) {
 
 interface AdvancedSettingsProps {
   readonly config: CrawlConfig;
+  readonly userAgentSelection: UserAgentChoice;
+  readonly customUserAgent: string;
+  readonly proxyPool: ProxyPoolDraft;
   readonly outputDirectory: string | undefined;
   readonly outputError: string | null;
   readonly onConfigChange: (config: CrawlConfig) => void;
+  readonly onUserAgentSelectionChange: (selection: UserAgentChoice) => void;
+  readonly onCustomUserAgentChange: (value: string) => void;
+  readonly onProxyPoolChange: (proxyPool: ProxyPoolDraft) => void;
   readonly onChooseOutput: () => void;
   readonly onClearOutput: () => void;
 }
 
 function AdvancedSettings({
   config,
+  userAgentSelection,
+  customUserAgent,
+  proxyPool,
   outputDirectory,
   outputError,
   onConfigChange,
+  onUserAgentSelectionChange,
+  onCustomUserAgentChange,
+  onProxyPoolChange,
   onChooseOutput,
   onClearOutput,
 }: AdvancedSettingsProps) {
@@ -429,6 +623,13 @@ function AdvancedSettings({
         </div>
       </Setting>
 
+      <UserAgentSettings
+        selection={userAgentSelection}
+        customValue={customUserAgent}
+        onSelectionChange={onUserAgentSelectionChange}
+        onCustomValueChange={onCustomUserAgentChange}
+      />
+
       <div className="grid grid-cols-2 gap-2 sm:col-span-2 sm:grid-cols-4">
         <NumberSetting
           label="Max depth"
@@ -475,6 +676,8 @@ function AdvancedSettings({
         />
       </div>
 
+      <ProxySettings value={proxyPool} onChange={onProxyPoolChange} />
+
       <Setting
         group
         label="Output directory"
@@ -485,7 +688,7 @@ function AdvancedSettings({
           <button
             type="button"
             onClick={onChooseOutput}
-            aria-describedby={outputError ? 'output-directory-error' : undefined}
+            aria-describedby={outputError ? 'advanced-settings-error' : undefined}
             className="flex h-9 min-w-0 flex-1 items-center gap-2 rounded-[9px] border border-white/[0.09] bg-black/20 px-3 text-left text-[11px] text-zinc-500 outline-none transition-colors hover:border-white/[0.14] hover:text-zinc-300 focus-visible:ring-2 focus-visible:ring-blue-400/50"
           >
             <Folder className="size-3.5 shrink-0" />
@@ -497,13 +700,268 @@ function AdvancedSettings({
             </Button>
           ) : null}
         </div>
-        {outputError ? (
-          <p id="output-directory-error" role="alert" className="mt-1.5 text-[10px] text-red-400">
-            {outputError}
-          </p>
-        ) : null}
       </Setting>
+      {outputError ? (
+        <p
+          id="advanced-settings-error"
+          role="alert"
+          className="-mt-2 text-[10px] leading-4 text-red-400 sm:col-span-2"
+        >
+          {outputError}
+        </p>
+      ) : null}
     </div>
+  );
+}
+
+function UserAgentSettings({
+  selection,
+  customValue,
+  onSelectionChange,
+  onCustomValueChange,
+}: {
+  readonly selection: UserAgentChoice;
+  readonly customValue: string;
+  readonly onSelectionChange: (selection: UserAgentChoice) => void;
+  readonly onCustomValueChange: (value: string) => void;
+}) {
+  return (
+    <Setting
+      group
+      label="User-Agent string"
+      hint="Overrides the UA string only. It does not change WebKit, Client Hints, or the full browser fingerprint."
+      className="sm:col-span-2"
+    >
+      <div className="grid gap-2 sm:grid-cols-[220px_minmax(0,1fr)]">
+        <select
+          value={selection}
+          onChange={(event) => onSelectionChange(event.target.value as UserAgentChoice)}
+          aria-label="User-Agent preset"
+          className="h-9 w-full appearance-none rounded-[9px] border border-white/[0.09] bg-[#101116] px-3 text-[11px] text-zinc-300 outline-none focus-visible:ring-2 focus-visible:ring-blue-400/50"
+        >
+          <option value="browser-default">Browser default</option>
+          {USER_AGENT_PRESETS.map((preset) => (
+            <option key={preset.id} value={preset.id}>
+              {preset.label}
+            </option>
+          ))}
+          <option value="custom">Custom…</option>
+        </select>
+        {selection === 'custom' ? (
+          <Input
+            value={customValue}
+            maxLength={512}
+            onChange={(event) => onCustomValueChange(event.target.value)}
+            aria-label="Custom User-Agent"
+            placeholder="Mozilla/5.0 …"
+            autoComplete="off"
+            autoCapitalize="none"
+            autoCorrect="off"
+            spellCheck={false}
+            className="font-mono text-[10px]"
+          />
+        ) : (
+          <div className="flex h-9 min-w-0 items-center rounded-[9px] border border-white/[0.06] bg-black/15 px-3 text-[10px] text-zinc-600">
+            <span className="truncate">
+              {selection === 'browser-default'
+                ? 'Use the rendering engine’s native identity.'
+                : USER_AGENT_PRESETS.find((preset) => preset.id === selection)?.detail}
+            </span>
+          </div>
+        )}
+      </div>
+    </Setting>
+  );
+}
+
+function ProxySettings({
+  value,
+  onChange,
+}: {
+  readonly value: ProxyPoolDraft;
+  readonly onChange: (value: ProxyPoolDraft) => void;
+}) {
+  const updateEntry = (id: string, update: Partial<ProxyEndpointDraft>) => {
+    onChange({
+      ...value,
+      entries: value.entries.map((entry) => (entry.id === id ? { ...entry, ...update } : entry)),
+    });
+  };
+
+  const removeEntry = (id: string) => {
+    if (value.entries.length === 1) return;
+    onChange({ ...value, entries: value.entries.filter((entry) => entry.id !== id) });
+  };
+
+  return (
+    <section className="space-y-3 sm:col-span-2" aria-labelledby="proxy-routing-heading">
+      <ToggleRow
+        label="Route through proxies"
+        description="Send captured browser traffic through one proxy or a rotating pool."
+        checked={value.enabled}
+        onChange={(enabled) => onChange({ ...value, enabled })}
+      />
+      {value.enabled ? (
+        <div className="rounded-[11px] border border-white/[0.075] bg-black/20 p-3.5">
+          <div className="flex items-start gap-2.5">
+            <div className="grid size-7 shrink-0 place-items-center rounded-[7px] border border-blue-400/15 bg-blue-400/[0.06]">
+              <Network className="size-3.5 text-blue-300/80" />
+            </div>
+            <div className="min-w-0">
+              <h3 id="proxy-routing-heading" className="text-[11px] font-medium text-zinc-300">
+                Proxy pool
+              </h3>
+              <p className="mt-0.5 text-[10px] leading-4 text-zinc-600">
+                Endpoints and routing settings are saved. Basic-auth credentials are request-only,
+                never written to history or capture files, and must be re-entered for Capture Again.
+              </p>
+            </div>
+          </div>
+
+          <div className="mt-3 grid gap-2 sm:grid-cols-3">
+            <label>
+              <span className="mb-1.5 block text-[10px] text-zinc-500">Selection</span>
+              <select
+                value={value.selection}
+                onChange={(event) =>
+                  onChange({ ...value, selection: event.target.value as ProxySelectionMode })
+                }
+                aria-label="Proxy selection mode"
+                className="h-9 w-full appearance-none rounded-[9px] border border-white/[0.09] bg-[#101116] px-3 text-[11px] text-zinc-300 outline-none focus-visible:ring-2 focus-visible:ring-blue-400/50"
+              >
+                <option value="round-robin">Round robin</option>
+                <option value="random">Random</option>
+              </select>
+            </label>
+            <NumberSetting
+              label="Minimum jitter (ms)"
+              value={value.jitterMinMs}
+              min={0}
+              max={30_000}
+              onChange={(jitterMinMs) => onChange({ ...value, jitterMinMs })}
+            />
+            <NumberSetting
+              label="Maximum jitter (ms)"
+              value={value.jitterMaxMs}
+              min={0}
+              max={30_000}
+              onChange={(jitterMaxMs) => onChange({ ...value, jitterMaxMs })}
+            />
+          </div>
+
+          <div className="mt-4 space-y-2.5">
+            {value.entries.map((entry, index) => (
+              <div
+                key={entry.id}
+                className="rounded-[9px] border border-white/[0.07] bg-white/[0.018] p-3"
+              >
+                <div className="flex items-start gap-2">
+                  <label className="min-w-0 flex-1">
+                    <span className="mb-1.5 block text-[10px] text-zinc-500">
+                      Proxy {index + 1}
+                    </span>
+                    <Input
+                      value={entry.server}
+                      onChange={(event) => updateEntry(entry.id, { server: event.target.value })}
+                      aria-label={`Proxy ${index + 1} server`}
+                      placeholder="https://proxy.example:8443"
+                      autoComplete="off"
+                      autoCapitalize="none"
+                      autoCorrect="off"
+                      spellCheck={false}
+                      className="font-mono text-[10px]"
+                    />
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => removeEntry(entry.id)}
+                    disabled={value.entries.length === 1}
+                    aria-label={`Remove proxy ${index + 1}`}
+                    className="mt-[22px] grid size-9 shrink-0 place-items-center rounded-[8px] border border-white/[0.07] text-zinc-600 outline-none transition-colors hover:border-red-400/20 hover:bg-red-400/[0.06] hover:text-red-300 focus-visible:ring-2 focus-visible:ring-blue-400/50 disabled:cursor-not-allowed disabled:opacity-30"
+                  >
+                    <Trash2 className="size-3.5" />
+                  </button>
+                </div>
+
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={entry.authenticationRequired}
+                  onClick={() =>
+                    updateEntry(entry.id, {
+                      authenticationRequired: !entry.authenticationRequired,
+                      ...(!entry.authenticationRequired ? {} : { username: '', password: '' }),
+                    })
+                  }
+                  className="mt-2 flex items-center gap-2 rounded-md px-1 py-1 text-[10px] text-zinc-600 outline-none transition-colors hover:text-zinc-300 focus-visible:ring-2 focus-visible:ring-blue-400/50"
+                >
+                  <KeyRound className="size-3" />
+                  Basic authentication
+                  <span
+                    className={cn(
+                      'rounded px-1.5 py-0.5 text-[8px] font-semibold uppercase tracking-[0.08em]',
+                      entry.authenticationRequired
+                        ? 'bg-blue-400/[0.09] text-blue-300/80'
+                        : 'bg-white/[0.04] text-zinc-650',
+                    )}
+                  >
+                    {entry.authenticationRequired ? 'Required' : 'Off'}
+                  </span>
+                </button>
+
+                {entry.authenticationRequired ? (
+                  <div className="mt-2">
+                    <div className="grid gap-2 sm:grid-cols-2">
+                      <Input
+                        value={entry.username}
+                        onChange={(event) =>
+                          updateEntry(entry.id, { username: event.target.value })
+                        }
+                        aria-label={`Proxy ${index + 1} username`}
+                        placeholder="Username · never saved"
+                        autoComplete="off"
+                        spellCheck={false}
+                      />
+                      <Input
+                        type="password"
+                        value={entry.password}
+                        onChange={(event) =>
+                          updateEntry(entry.id, { password: event.target.value })
+                        }
+                        aria-label={`Proxy ${index + 1} password`}
+                        placeholder="Password · never saved"
+                        autoComplete="new-password"
+                        spellCheck={false}
+                      />
+                    </div>
+                    {entry.server.trimStart().toLowerCase().startsWith('http://') ? (
+                      <p className="mt-2 text-[9px] leading-4 text-amber-300/75" role="note">
+                        Basic credentials are not encrypted over an HTTP proxy. Use an HTTPS proxy
+                        endpoint to protect the client-to-proxy hop.
+                      </p>
+                    ) : null}
+                  </div>
+                ) : null}
+              </div>
+            ))}
+          </div>
+
+          <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
+            <p className="text-[9px] text-zinc-650">
+              {value.entries.length} of {MAX_PROXY_POOL_ENTRIES} endpoints
+            </p>
+            <Button
+              variant="secondary"
+              size="sm"
+              disabled={value.entries.length >= MAX_PROXY_POOL_ENTRIES}
+              onClick={() => onChange({ ...value, entries: [...value.entries, proxyEntryDraft()] })}
+            >
+              <Plus className="size-3.5" /> Add proxy
+            </Button>
+          </div>
+        </div>
+      ) : null}
+    </section>
   );
 }
 

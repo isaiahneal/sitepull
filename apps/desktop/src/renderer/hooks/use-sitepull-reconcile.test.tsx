@@ -20,6 +20,7 @@ const recipe: CaptureRecipe = {
   url: 'https://example.com/',
   allowHttpFallback: true,
   outputDirectory: '/tmp/sitepull',
+  proxyPool: null,
   config: {
     ...DEFAULT_CRAWL_CONFIG,
     viewports: DEFAULT_CRAWL_CONFIG.viewports.map((viewport) => ({ ...viewport })),
@@ -295,7 +296,14 @@ describe('useSitepull owner-job reconciliation', () => {
     const { result, unmount } = renderHook(() => useSitepull());
     await waitFor(() => expect(result.current.model.error?.code).toBe('NAVIGATION_TIMEOUT'));
 
-    await act(() => result.current.startCapture(recipe));
+    await act(() =>
+      result.current.startCapture({
+        url: recipe.url,
+        allowHttpFallback: recipe.allowHttpFallback,
+        outputDirectory: recipe.outputDirectory,
+        config: recipe.config,
+      }),
+    );
     await waitFor(() => expect(result.current.model.error?.code).toBe('OUTPUT_NOT_WRITABLE'));
 
     await act(() => window.dispatchEvent(new Event('focus')));

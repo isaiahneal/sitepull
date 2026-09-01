@@ -34,7 +34,7 @@ const ERROR_GUIDANCE: Partial<Record<SerializedSitepullError['code'], string>> =
 };
 
 export function ErrorView({ controller }: ErrorViewProps) {
-  const { model, retry, goHome } = controller;
+  const { model, canRetry, retry, goHome } = controller;
   const error = model.error;
   const [copied, setCopied] = useState(false);
   if (!error) return null;
@@ -74,7 +74,7 @@ export function ErrorView({ controller }: ErrorViewProps) {
         </p>
 
         <div className="mt-7 flex flex-wrap justify-center gap-2">
-          {model.lastRequest ? (
+          {canRetry ? (
             <Button variant="primary" onClick={retry}>
               <RotateCw className="size-3.5" /> Retry
             </Button>

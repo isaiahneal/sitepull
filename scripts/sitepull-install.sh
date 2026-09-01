@@ -27,7 +27,7 @@ Usage:
   sitepull-install.sh [--version VERSION] [--dry-run]
 
 Options:
-  --version VERSION  Install an exact release such as 0.4.1 or v0.4.1.
+  --version VERSION  Install an exact release such as 0.5.0 or v0.5.0.
                      Without this option, install GitHub's latest release.
   --dry-run          Print the selected platform, asset, and install method.
                      This performs no network requests or filesystem changes.

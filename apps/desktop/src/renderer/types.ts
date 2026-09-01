@@ -5,6 +5,8 @@ import type {
   CrawlConfig,
   LogEvent,
   ProgressEvent,
+  ProxyPoolRecipe,
+  ProxyPoolRequest,
   RecentCapture,
   SerializedSitepullError,
 } from '@sitepull/contracts';
@@ -30,12 +32,7 @@ export interface AppModel {
   session: CaptureSession | null;
   manifest: CaptureManifest | null;
   error: SerializedSitepullError | null;
-  lastRequest: {
-    url: string;
-    allowHttpFallback?: boolean;
-    outputDirectory?: string;
-    config: CrawlConfig;
-  } | null;
+  lastRequest: SafeCaptureRequest | null;
 }
 
 export interface StartCaptureOptions {
@@ -43,4 +40,14 @@ export interface StartCaptureOptions {
   allowHttpFallback?: boolean;
   outputDirectory?: string;
   config: CrawlConfig;
+  proxyPool?: ProxyPoolRequest;
+}
+
+/** Renderer-visible request evidence. Proxy credentials are deliberately absent. */
+export interface SafeCaptureRequest {
+  url: string;
+  allowHttpFallback?: boolean;
+  outputDirectory?: string;
+  config: CrawlConfig;
+  proxyPool: ProxyPoolRecipe | null;
 }

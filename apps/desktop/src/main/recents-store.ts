@@ -16,7 +16,7 @@ const MAX_INDEX_BYTES = 2 * 1024 * 1024;
 
 function emptyIndex(): RecentsIndex {
   return RecentsIndexSchema.parse({
-    schemaVersion: 1,
+    schemaVersion: 2,
     updatedAt: new Date().toISOString(),
     lastUsedRecipe: null,
     captures: [],
@@ -56,10 +56,11 @@ export class RecentsStore {
       }
       const refreshed = RecentsIndexSchema.parse({
         ...index,
+        schemaVersion: 2,
         updatedAt: changed ? new Date().toISOString() : index.updatedAt,
         captures,
       });
-      if (changed) await this.#writeUnlocked(refreshed);
+      if (changed || index.schemaVersion !== 2) await this.#writeUnlocked(refreshed);
       return refreshed;
     });
   }
@@ -75,7 +76,7 @@ export class RecentsStore {
         .sort((left, right) => right.capturedAt.localeCompare(left.capturedAt))
         .slice(0, MAX_RECENTS);
       const next = RecentsIndexSchema.parse({
-        schemaVersion: 1,
+        schemaVersion: 2,
         updatedAt: new Date().toISOString(),
         lastUsedRecipe: index.lastUsedRecipe,
         captures,
@@ -91,6 +92,7 @@ export class RecentsStore {
       const index = await this.#readUnlocked();
       const next = RecentsIndexSchema.parse({
         ...index,
+        schemaVersion: 2,
         updatedAt: new Date().toISOString(),
         lastUsedRecipe: parsedRecipe,
       });

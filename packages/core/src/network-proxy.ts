@@ -1,32 +1,58 @@
 import http, { type IncomingMessage, type ServerResponse } from 'node:http';
-import https from 'node:https';
 import net from 'node:net';
 import type { Duplex } from 'node:stream';
+import tls from 'node:tls';
+
+import type { ProxyPoolRequest } from '@sitepull/contracts';
 
 import { SitepullError } from './errors.js';
-import {
-  createPinnedLookup,
-  resolveNetworkTarget,
-  type NetworkAddressLookup,
-  type ResolvedNetworkTarget,
-} from './network-policy.js';
+import { resolveNetworkTarget, type NetworkAddressLookup } from './network-policy.js';
+import { createOutboundRouter, type OutboundConnectionFactory } from './upstream-proxy.js';
 
 export interface NetworkPolicyProxyOptions {
   readonly allowPrivateHosts: boolean;
   readonly connectTimeoutMs: number;
   readonly lookupAddresses?: NetworkAddressLookup;
+  readonly proxyPool?: ProxyPoolRequest;
+  readonly signal?: AbortSignal;
   readonly onError?: (error: unknown, target: string | null) => void;
 }
 
 export interface NetworkPolicyProxy {
   readonly serverUrl: string;
+  readonly openConnection: OutboundConnectionFactory;
+  upstreamErrorFor(target: string, sinceMs: number): SitepullError | undefined;
   close(): Promise<void>;
 }
 
-type PinnedRequestOptions = http.RequestOptions & {
-  readonly autoSelectFamily: boolean;
-  readonly servername?: string;
-};
+interface TimedProxyError {
+  readonly error: SitepullError;
+  readonly occurredAtMs: number;
+}
+
+const MAX_TRACKED_PROXY_ERRORS = 128;
+
+function isUpstreamProxyError(error: unknown): error is SitepullError {
+  return (
+    error instanceof SitepullError &&
+    (error.code === 'UPSTREAM_PROXY_INVALID' ||
+      error.code === 'UPSTREAM_PROXY_AUTH_REQUIRED' ||
+      error.code === 'UPSTREAM_PROXY_TLS_FAILED' ||
+      error.code === 'UPSTREAM_PROXY_CONNECT_FAILED')
+  );
+}
+
+function targetKey(value: string): string | null {
+  try {
+    const absolute = /^https?:\/\//iu.test(value);
+    const parsed = new URL(absolute ? value : `http://${value}`);
+    const port =
+      parsed.port === '' ? (absolute && parsed.protocol === 'http:' ? 80 : 443) : parsed.port;
+    return `${parsed.hostname}:${port}`;
+  } catch {
+    return null;
+  }
+}
 
 function proxyTarget(request: IncomingMessage): URL {
   const raw = request.url ?? '';
@@ -70,25 +96,90 @@ function upstreamHeaders(request: IncomingMessage, target: URL): http.OutgoingHt
   return headers;
 }
 
+function downstreamHeaders(headers: http.IncomingHttpHeaders): http.OutgoingHttpHeaders {
+  const forwarded: http.OutgoingHttpHeaders = { ...headers };
+  for (const name of Object.keys(forwarded)) {
+    if (name.startsWith('x-sitepull-proxy')) delete forwarded[name];
+  }
+  return forwarded;
+}
+
 function requestOptions(
   request: IncomingMessage,
   target: URL,
-  resolved: ResolvedNetworkTarget,
-): PinnedRequestOptions {
+  socket: Duplex,
+): http.RequestOptions {
+  const agent = new http.Agent({ keepAlive: false });
+  agent.createConnection = () => socket;
   return {
-    protocol: target.protocol,
-    hostname: resolved.hostname,
-    port: target.port === '' ? undefined : Number.parseInt(target.port, 10),
+    protocol: 'http:',
+    hostname: target.hostname,
+    port:
+      target.port === ''
+        ? target.protocol === 'https:'
+          ? 443
+          : 80
+        : Number.parseInt(target.port, 10),
     method: request.method ?? 'GET',
     path: `${target.pathname}${target.search}`,
     headers: upstreamHeaders(request, target),
-    lookup: createPinnedLookup(resolved.addresses),
-    autoSelectFamily: resolved.addresses.length > 1,
-    agent: false,
-    ...(target.protocol === 'https:' && net.isIP(resolved.hostname) === 0
-      ? { servername: resolved.hostname }
-      : {}),
+    agent,
   };
+}
+
+function targetPort(target: URL): number {
+  if (target.port !== '') return Number.parseInt(target.port, 10);
+  return target.protocol === 'https:' ? 443 : 80;
+}
+
+async function originSocket(socket: Duplex, target: URL, signal: AbortSignal): Promise<Duplex> {
+  if (target.protocol !== 'https:') return socket;
+  if (signal.aborted) {
+    socket.destroy();
+    throw signal.reason instanceof Error
+      ? signal.reason
+      : new Error('The origin TLS handshake was aborted.', { cause: signal.reason });
+  }
+
+  const secureSocket = tls.connect({
+    socket,
+    rejectUnauthorized: true,
+    ...(net.isIP(target.hostname) === 0 ? { servername: target.hostname } : {}),
+  });
+  await new Promise<void>((resolve, reject) => {
+    const cleanup = (): void => {
+      secureSocket.off('secureConnect', connected);
+      secureSocket.off('error', failed);
+      secureSocket.off('close', closed);
+      signal.removeEventListener('abort', aborted);
+    };
+    const connected = (): void => {
+      cleanup();
+      resolve();
+    };
+    const failed = (error: Error): void => {
+      cleanup();
+      reject(error);
+    };
+    const closed = (): void => {
+      cleanup();
+      reject(new Error('The origin TLS socket closed during its handshake.'));
+    };
+    const aborted = (): void => {
+      cleanup();
+      secureSocket.destroy();
+      reject(
+        signal.reason instanceof Error
+          ? signal.reason
+          : new Error('The origin TLS handshake was aborted.', { cause: signal.reason }),
+      );
+    };
+    secureSocket.once('secureConnect', connected);
+    secureSocket.once('error', failed);
+    secureSocket.once('close', closed);
+    signal.addEventListener('abort', aborted, { once: true });
+  });
+  return secureSocket;
 }
 
 function errorStatus(error: unknown): number {
@@ -106,6 +197,7 @@ function failHttpResponse(response: ServerResponse, error: unknown): void {
     Connection: 'close',
     'Content-Type': 'text/plain; charset=utf-8',
     'X-Sitepull-Proxy': 'network-policy',
+    ...(isUpstreamProxyError(error) ? { 'X-Sitepull-Proxy-Error': error.code } : {}),
   });
   response.end(
     status === 403 ? 'Blocked by Sitepull network policy.\n' : 'Sitepull proxy error.\n',
@@ -115,8 +207,11 @@ function failHttpResponse(response: ServerResponse, error: unknown): void {
 function failSocket(socket: Duplex, error: unknown): void {
   if (!socket.destroyed) {
     const status = errorStatus(error);
+    const proxyErrorHeader = isUpstreamProxyError(error)
+      ? `X-Sitepull-Proxy-Error: ${error.code}\r\n`
+      : '';
     socket.end(
-      `HTTP/1.1 ${status} ${status === 403 ? 'Forbidden' : 'Bad Gateway'}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`,
+      `HTTP/1.1 ${status} ${status === 403 ? 'Forbidden' : 'Bad Gateway'}\r\n${proxyErrorHeader}Connection: close\r\nContent-Length: 0\r\n\r\n`,
     );
   }
 }
@@ -172,7 +267,14 @@ export async function createNetworkPolicyProxy(
     throw new RangeError('connectTimeoutMs must be a positive safe integer.');
   }
 
+  const outboundRouter = createOutboundRouter({
+    connectTimeoutMs: options.connectTimeoutMs,
+    ...(options.proxyPool === undefined ? {} : { proxyPool: options.proxyPool }),
+    ...(options.signal === undefined ? {} : { signal: options.signal }),
+  });
+
   let closed = false;
+  const upstreamErrors = new Map<string, TimedProxyError>();
   const sockets = new Set<Duplex>();
   const requests = new Set<http.ClientRequest>();
   const trackSocket = (socket: Duplex): void => {
@@ -183,7 +285,7 @@ export async function createNetworkPolicyProxy(
     sockets.add(socket);
     socket.once('close', () => sockets.delete(socket));
   };
-  const trackRequest = (request: http.ClientRequest, protocol: string): void => {
+  const trackRequest = (request: http.ClientRequest): void => {
     requests.add(request);
     request.once('close', () => requests.delete(request));
     const timer = setTimeout(() => {
@@ -201,8 +303,7 @@ export async function createNetworkPolicyProxy(
         return;
       }
       trackSocket(socket);
-      if (protocol === 'https:') socket.once('secureConnect', clearTimer);
-      else if (socket.connecting) socket.once('connect', clearTimer);
+      if (socket.connecting) socket.once('connect', clearTimer);
       else clearTimer();
       socket.once('close', clearTimer);
     });
@@ -211,6 +312,16 @@ export async function createNetworkPolicyProxy(
     if (closed) throw new Error('Sitepull network proxy is closed.');
   };
   const report = (error: unknown, target: string | null): void => {
+    if (target !== null && isUpstreamProxyError(error)) {
+      const key = targetKey(target);
+      if (key !== null) {
+        if (!upstreamErrors.has(key) && upstreamErrors.size >= MAX_TRACKED_PROXY_ERRORS) {
+          const oldest = upstreamErrors.keys().next().value;
+          if (oldest !== undefined) upstreamErrors.delete(oldest);
+        }
+        upstreamErrors.set(key, { error, occurredAtMs: Date.now() });
+      }
+    }
     try {
       options.onError?.(error, target);
     } catch {
@@ -219,6 +330,11 @@ export async function createNetworkPolicyProxy(
   };
 
   const server = http.createServer((request, response) => {
+    const clientAbort = new AbortController();
+    request.once('aborted', () => clientAbort.abort(new Error('Browser request aborted.')));
+    response.once('close', () => {
+      if (!response.writableEnded) clientAbort.abort(new Error('Browser response closed.'));
+    });
     void (async () => {
       let target: URL | undefined;
       try {
@@ -229,12 +345,24 @@ export async function createNetworkPolicyProxy(
           options.lookupAddresses,
         );
         ensureOpen();
-        const transport = target.protocol === 'https:' ? https : http;
-        const upstream = transport.request(requestOptions(request, target, resolved), (message) => {
-          response.writeHead(message.statusCode ?? 502, message.statusMessage, message.headers);
+        const rawSocket = await outboundRouter.open(
+          resolved,
+          targetPort(target),
+          clientAbort.signal,
+        );
+        ensureOpen();
+        const socket = await originSocket(rawSocket, target, clientAbort.signal);
+        trackSocket(socket);
+        const upstream = http.request(requestOptions(request, target, socket), (message) => {
+          response.writeHead(
+            message.statusCode ?? 502,
+            message.statusMessage,
+            downstreamHeaders(message.headers),
+          );
           message.pipe(response);
         });
-        trackRequest(upstream, target.protocol);
+        trackRequest(upstream);
+        socket.resume();
         upstream.once('error', (error) => {
           if (closed) return;
           report(error, target?.href ?? null);
@@ -254,6 +382,9 @@ export async function createNetworkPolicyProxy(
   });
 
   server.on('connect', (request, clientSocket, head) => {
+    const clientAbort = new AbortController();
+    clientSocket.once('error', (error) => clientAbort.abort(error));
+    clientSocket.once('close', () => clientAbort.abort(new Error('Browser tunnel closed.')));
     void (async () => {
       let target: { hostname: string; port: number } | undefined;
       try {
@@ -264,26 +395,14 @@ export async function createNetworkPolicyProxy(
           options.lookupAddresses,
         );
         ensureOpen();
-        const upstream = net.createConnection({
-          host: resolved.hostname,
-          port: target.port,
-          lookup: createPinnedLookup(resolved.addresses),
-          autoSelectFamily: resolved.addresses.length > 1,
-        });
+        const upstream = await outboundRouter.open(resolved, target.port, clientAbort.signal);
+        ensureOpen();
         trackSocket(upstream);
-        const timer = setTimeout(() => {
-          upstream.destroy(new Error('Sitepull proxy CONNECT timed out.'));
-        }, options.connectTimeoutMs);
-        timer.unref();
-        upstream.once('connect', () => {
-          clearTimeout(timer);
-          clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
-          if (head.byteLength > 0) upstream.write(head);
-          clientSocket.pipe(upstream);
-          upstream.pipe(clientSocket);
-        });
+        clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+        if (head.byteLength > 0) upstream.write(head);
+        clientSocket.pipe(upstream);
+        upstream.pipe(clientSocket);
         upstream.once('error', (error) => {
-          clearTimeout(timer);
           if (closed) return;
           report(error, target === undefined ? null : `${target.hostname}:${target.port}`);
           failSocket(clientSocket, error);
@@ -299,6 +418,9 @@ export async function createNetworkPolicyProxy(
   });
 
   server.on('upgrade', (request, clientSocket, head) => {
+    const clientAbort = new AbortController();
+    clientSocket.once('error', (error) => clientAbort.abort(error));
+    clientSocket.once('close', () => clientAbort.abort(new Error('Browser upgrade closed.')));
     void (async () => {
       let target: URL | undefined;
       try {
@@ -321,26 +443,14 @@ export async function createNetworkPolicyProxy(
         );
         ensureOpen();
         const port = target.port === '' ? 80 : Number.parseInt(target.port, 10);
-        const upstream = net.createConnection({
-          host: resolved.hostname,
-          port,
-          lookup: createPinnedLookup(resolved.addresses),
-          autoSelectFamily: resolved.addresses.length > 1,
-        });
+        const upstream = await outboundRouter.open(resolved, port, clientAbort.signal);
+        ensureOpen();
         trackSocket(upstream);
-        const timer = setTimeout(() => {
-          upstream.destroy(new Error('Sitepull proxy upgrade connection timed out.'));
-        }, options.connectTimeoutMs);
-        timer.unref();
-        upstream.once('connect', () => {
-          clearTimeout(timer);
-          upstream.write(rawUpgradeRequest(request, target as URL));
-          if (head.byteLength > 0) upstream.write(head);
-          clientSocket.pipe(upstream);
-          upstream.pipe(clientSocket);
-        });
+        upstream.write(rawUpgradeRequest(request, target));
+        if (head.byteLength > 0) upstream.write(head);
+        clientSocket.pipe(upstream);
+        upstream.pipe(clientSocket);
         upstream.once('error', (error) => {
-          clearTimeout(timer);
           if (closed) return;
           report(error, target?.href ?? null);
           failSocket(clientSocket, error);
@@ -381,9 +491,19 @@ export async function createNetworkPolicyProxy(
   let closePromise: Promise<void> | undefined;
   return {
     serverUrl: `http://127.0.0.1:${address.port}`,
+    openConnection: outboundRouter.open,
+    upstreamErrorFor: (target, sinceMs) => {
+      const key = targetKey(target);
+      if (key === null) return undefined;
+      const recorded = upstreamErrors.get(key);
+      return recorded !== undefined && recorded.occurredAtMs >= sinceMs
+        ? recorded.error
+        : undefined;
+    },
     close: () => {
       closePromise ??= new Promise<void>((resolve, reject) => {
         closed = true;
+        outboundRouter.close();
         for (const request of requests) request.destroy();
         for (const socket of sockets) socket.destroy();
         server.close((error) => {

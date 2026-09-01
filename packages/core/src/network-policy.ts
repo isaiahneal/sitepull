@@ -3,10 +3,12 @@ import { lookup as dnsLookup } from 'node:dns/promises';
 import http from 'node:http';
 import https from 'node:https';
 import net, { type LookupFunction } from 'node:net';
-import { Readable } from 'node:stream';
+import { Readable, type Duplex } from 'node:stream';
+import tls from 'node:tls';
 
 import { throwIfAborted } from './async.js';
 import { SitepullError } from './errors.js';
+import type { OutboundConnectionFactory } from './upstream-proxy.js';
 
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 export const MAX_VALIDATED_RESOURCE_REDIRECTS = 10;
@@ -252,6 +254,8 @@ export interface ValidatedResourceRequestOptions {
   readonly fetch?: ResourceFetch;
   readonly lookupAddresses?: NetworkAddressLookup;
   readonly headersForUrl?: (url: string) => HeadersInit | Promise<HeadersInit>;
+  /** Routes already-validated destinations through the active outbound policy. */
+  readonly connectionFactory?: OutboundConnectionFactory;
 }
 
 export interface ValidatedResourceResponse {
@@ -273,38 +277,116 @@ function responseHeaders(rawHeaders: readonly string[]): Headers {
   return headers;
 }
 
+async function secureResourceSocket(
+  socket: Duplex,
+  hostname: string,
+  signal: AbortSignal,
+): Promise<Duplex> {
+  if (signal.aborted) {
+    socket.destroy();
+    throw signal.reason instanceof Error
+      ? signal.reason
+      : new Error('The resource TLS handshake was aborted.', { cause: signal.reason });
+  }
+
+  const secureSocket = tls.connect({
+    socket,
+    rejectUnauthorized: true,
+    ...(net.isIP(hostname) === 0 ? { servername: hostname } : {}),
+  });
+  await new Promise<void>((resolve, reject) => {
+    const cleanup = (): void => {
+      secureSocket.off('secureConnect', connected);
+      secureSocket.off('error', failed);
+      secureSocket.off('close', closed);
+      signal.removeEventListener('abort', aborted);
+    };
+    const connected = (): void => {
+      cleanup();
+      resolve();
+    };
+    const failed = (error: Error): void => {
+      cleanup();
+      reject(error);
+    };
+    const closed = (): void => {
+      cleanup();
+      reject(new Error('The resource TLS socket closed during its handshake.'));
+    };
+    const aborted = (): void => {
+      cleanup();
+      secureSocket.destroy();
+      reject(
+        signal.reason instanceof Error
+          ? signal.reason
+          : new Error('The resource TLS handshake was aborted.', { cause: signal.reason }),
+      );
+    };
+    secureSocket.once('secureConnect', connected);
+    secureSocket.once('error', failed);
+    secureSocket.once('close', closed);
+    signal.addEventListener('abort', aborted, { once: true });
+  });
+  return secureSocket;
+}
+
 async function fetchPinnedResponse(
   url: string,
   target: ResolvedNetworkTarget,
   headersInit: HeadersInit | undefined,
   signal: AbortSignal,
+  connectionFactory?: OutboundConnectionFactory,
 ): Promise<Response> {
   const parsed = new URL(url);
   const headers = new Headers(headersInit);
   if (!headers.has('accept-encoding')) headers.set('accept-encoding', 'identity');
+  if (!headers.has('host')) headers.set('host', parsed.host);
+
+  let connectedSocket: Duplex | undefined;
+  let connectedAgent: http.Agent | undefined;
+  if (connectionFactory !== undefined) {
+    const port =
+      parsed.port === ''
+        ? parsed.protocol === 'https:'
+          ? 443
+          : 80
+        : Number.parseInt(parsed.port, 10);
+    const rawSocket = await connectionFactory(target, port, signal);
+    if (parsed.protocol === 'https:') {
+      connectedSocket = await secureResourceSocket(rawSocket, target.hostname, signal);
+    } else {
+      connectedSocket = rawSocket;
+    }
+    connectedAgent = new http.Agent({ keepAlive: false });
+    connectedAgent.createConnection = () => connectedSocket;
+  }
+
   const transport = parsed.protocol === 'https:' ? https : http;
   const lookup = createPinnedLookup(target.addresses);
   const requestOptions: http.RequestOptions & {
-    readonly autoSelectFamily: boolean;
+    readonly autoSelectFamily?: boolean;
     readonly servername?: string;
   } = {
-    protocol: parsed.protocol,
+    protocol: connectedSocket === undefined ? parsed.protocol : 'http:',
     hostname: target.hostname,
     port: parsed.port === '' ? undefined : Number.parseInt(parsed.port, 10),
     method: 'GET',
     path: `${parsed.pathname}${parsed.search}`,
     headers: Object.fromEntries(headers.entries()),
-    lookup,
-    autoSelectFamily: target.addresses.length > 1,
-    agent: false,
+    ...(connectedSocket === undefined
+      ? { lookup, autoSelectFamily: target.addresses.length > 1, agent: false }
+      : { agent: connectedAgent }),
     signal,
-    ...(parsed.protocol === 'https:' && net.isIP(target.hostname) === 0
+    ...(connectedSocket === undefined &&
+    parsed.protocol === 'https:' &&
+    net.isIP(target.hostname) === 0
       ? { servername: target.hostname }
       : {}),
   };
 
   return new Promise<Response>((resolve, reject) => {
-    const request = transport.request(requestOptions, (message) => {
+    const requestTransport = connectedSocket === undefined ? transport : http;
+    const request = requestTransport.request(requestOptions, (message) => {
       const status = message.statusCode ?? 500;
       const hasBody = status !== 101 && status !== 204 && status !== 205 && status !== 304;
       try {
@@ -324,6 +406,7 @@ async function fetchPinnedResponse(
       }
     });
     request.once('error', reject);
+    connectedSocket?.resume();
     request.end();
   });
 }
@@ -375,7 +458,13 @@ export async function fetchValidatedResource(
     const requestHeaders = await options.headersForUrl?.(currentUrl);
     const response =
       options.fetch === undefined
-        ? await fetchPinnedResponse(currentUrl, target, requestHeaders, signal)
+        ? await fetchPinnedResponse(
+            currentUrl,
+            target,
+            requestHeaders,
+            signal,
+            options.connectionFactory,
+          )
         : await options.fetch(currentUrl, {
             cache: 'no-store',
             redirect: 'manual',

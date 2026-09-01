@@ -26,6 +26,7 @@ function captureRecipe(outputDirectory: string): CaptureRecipe {
     url: 'https://example.com/',
     allowHttpFallback: true,
     outputDirectory,
+    proxyPool: null,
     config: {
       ...DEFAULT_CRAWL_CONFIG,
       maxDepth: 4,
@@ -89,5 +90,32 @@ describe('RecentsStore', () => {
     expect(restored.lastUsedRecipe).toEqual(recipe);
     expect(restored.lastUsedRecipe?.config.maxPages).toBe(25);
     expect(restored.captures).toEqual([]);
+  });
+
+  it('migrates a valid schema-version-1 index without losing its saved recipe', async () => {
+    const root = await temporaryRoot();
+    const indexPath = path.join(root, 'recents.json');
+    const recipe = captureRecipe(root);
+    const legacyRecipe = {
+      ...recipe,
+      config: { ...recipe.config, userAgent: undefined },
+      proxyPool: undefined,
+    };
+    await writeFile(
+      indexPath,
+      `${JSON.stringify({
+        schemaVersion: 1,
+        updatedAt: '2026-08-30T12:00:00.000Z',
+        lastUsedRecipe: legacyRecipe,
+        captures: [],
+      })}\n`,
+      'utf8',
+    );
+
+    const restored = await new RecentsStore(indexPath).list();
+
+    expect(restored.schemaVersion).toBe(2);
+    expect(restored.lastUsedRecipe).toEqual(recipe);
+    expect(JSON.parse(await readFile(indexPath, 'utf8'))).toMatchObject({ schemaVersion: 2 });
   });
 });

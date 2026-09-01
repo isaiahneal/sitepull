@@ -13,6 +13,7 @@ import {
 } from './primitives.js';
 import { CaptureRecipeSchema, RecentsIndexSchema } from './recents.js';
 import { CaptureResultSummarySchema } from './results.js';
+import { ProxyPoolRequestSchema } from './proxy.js';
 
 export const SITEPULL_IPC_CHANNELS = {
   startCapture: 'sitepull:capture:start',
@@ -37,6 +38,7 @@ export const StartCapturePayloadSchema = z
     allowHttpFallback: z.boolean().optional(),
     outputDirectory: FileSystemPathSchema.optional(),
     config: CrawlConfigSchema.optional(),
+    proxyPool: ProxyPoolRequestSchema.optional(),
   })
   .strict();
 

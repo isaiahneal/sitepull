@@ -11,6 +11,7 @@ import {
   NonNegativeIntegerSchema,
 } from './primitives.js';
 import { CaptureStatusSchema } from './results.js';
+import { ProxyPoolRecipeSchema } from './proxy.js';
 
 export const CaptureAvailabilitySchema = z.enum(['available', 'missing']);
 
@@ -25,6 +26,7 @@ export const CaptureRecipeSchema = z
     allowHttpFallback: z.boolean(),
     outputDirectory: FileSystemPathSchema,
     config: CrawlConfigSchema,
+    proxyPool: ProxyPoolRecipeSchema.nullable().default(null),
   })
   .strict();
 
@@ -46,7 +48,7 @@ export const RecentCaptureSchema = z
 
 export const RecentsIndexSchema = z
   .object({
-    schemaVersion: z.literal(1),
+    schemaVersion: z.union([z.literal(1), z.literal(2)]),
     updatedAt: IsoDateTimeSchema,
     lastUsedRecipe: CaptureRecipeSchema.nullable().default(null),
     captures: z.array(RecentCaptureSchema).max(100),

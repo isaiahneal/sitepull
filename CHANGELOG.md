@@ -2,6 +2,32 @@
 
 All notable Sitepull releases are documented here.
 
+## [0.5.0] - 2026-08-31
+
+### Added
+
+- First-class HTTP and HTTPS upstream proxy routing in both the headless CLI and desktop app, including ordered proxy pools, random selection, and bounded connection jitter
+- Repeatable `--proxy` flags with secret-safe environment-variable authentication, plus matching desktop proxy rows whose credentials exist only for the current capture/retry session
+- A `--user-agent` CLI override and desktop User-Agent preset/custom picker, persisted with the effective capture recipe for exact **Capture Again** behavior
+
+### Security
+
+- Sitepull keeps its validated loopback policy proxy in front of every configured upstream: destinations are still resolved locally, private or mixed address sets are rejected, and only pinned numeric destinations are sent through the selected proxy
+- Explicit source-map downloads use the same selected upstream path, preventing a proxy-enabled capture from leaking that secondary traffic over a direct connection
+- Proxy authentication is added only to the outer proxy hop and is excluded from capture recipes, recents, manifests, logs, events, errors, AI context, and exported archives
+- Upstream failures are fail-closed and never fall back to the machine's direct connection; proxy failures also cannot trigger the inferred HTTPS-to-HTTP retry
+
+### Changed
+
+- Capture metadata and manifests now identify schema version 2 while the v0.5 parser continues to accept version 1 captures
+- Proxy rotation is defined per new outbound connection. Round-robin guarantees ordered selection; random mode may select the same proxy consecutively, and jitter is abortable and bounded from 0 to 30 seconds
+- A User-Agent override changes the HTTP header and `navigator.userAgent`; it is not presented as full browser fingerprint emulation because Chromium User-Agent Client Hints remain a separate identity surface
+
+### Compatibility
+
+- Proxy endpoints support explicit `http://` and `https://` forward proxies with optional Basic authentication. Embedded credentials, PAC/system proxy discovery, SOCKS, remote target DNS, paths, queries, and fragments are rejected
+- The existing macOS, Ubuntu, Debian, Windows, Fedora, and Alpine release matrix remains unchanged
+
 ## [0.4.1] - 2026-08-31
 
 ### Added
@@ -125,6 +151,7 @@ All notable Sitepull releases are documented here.
 - PNG dimension and decoded-pixel enforcement at capture time and again before desktop rendering
 - Deterministic fixture site plus unit, integration, packaging, and real-browser acceptance coverage
 
+[0.5.0]: https://github.com/isaiahneal/sitepull/releases/tag/v0.5.0
 [0.4.1]: https://github.com/isaiahneal/sitepull/releases/tag/v0.4.1
 [0.4.0]: https://github.com/isaiahneal/sitepull/releases/tag/v0.4.0
 [0.3.1]: https://github.com/isaiahneal/sitepull/releases/tag/v0.3.1

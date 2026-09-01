@@ -5,7 +5,7 @@
 Downloads, verifies, and launches the Sitepull Windows x64 installer.
 
 .PARAMETER Version
-Installs a specific release such as 0.4.1 or v0.4.1. Omit it for the latest stable release.
+Installs a specific release such as 0.5.0 or v0.5.0. Omit it for the latest stable release.
 
 .PARAMETER DryRun
 Prints the release selection and installation method without network access or filesystem changes.
@@ -44,7 +44,7 @@ function Resolve-RequestedTag {
         $normalized = $normalized.Substring(1)
     }
     if ($normalized -notmatch '^\d+\.\d+\.\d+$') {
-        throw "Invalid -Version '$RequestedVersion'. Use a release version such as 0.4.1 or v0.4.1."
+        throw "Invalid -Version '$RequestedVersion'. Use a release version such as 0.5.0 or v0.5.0."
     }
     return "v$normalized"
 }

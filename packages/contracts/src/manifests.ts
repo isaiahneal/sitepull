@@ -39,7 +39,7 @@ export const CaptureArtifactPathsSchema = z
 
 export const SitepullMetadataSchema = z
   .object({
-    schemaVersion: z.literal(1),
+    schemaVersion: z.union([z.literal(1), z.literal(2)]),
     generator: z
       .object({
         name: z.literal('Sitepull'),
@@ -55,7 +55,7 @@ export const SitepullMetadataSchema = z
 
 export const CaptureManifestSchema = z
   .object({
-    schemaVersion: z.literal(1),
+    schemaVersion: z.union([z.literal(1), z.literal(2)]),
     generatorVersion: z.string().min(1).max(128),
     captureId: CaptureIdSchema,
     status: CaptureStatusSchema,

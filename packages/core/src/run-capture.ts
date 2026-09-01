@@ -21,6 +21,7 @@ import {
   type JsonValue,
   type PageLink,
   type PageManifest,
+  type ProxyPoolRequest,
   type ResourceKind as ContractResourceKind,
   type SkippedUrl,
 } from '@sitepull/contracts';
@@ -72,6 +73,8 @@ export interface RunCaptureOptions {
   readonly allowPrivateHosts?: boolean;
   /** Use a distro-managed Chromium build instead of Playwright's bundled binary. */
   readonly chromiumExecutablePath?: string;
+  /** Optional authenticated HTTP(S) upstream proxies used by every outbound connection. */
+  readonly proxyPool?: ProxyPoolRequest;
 }
 
 export interface CaptureRunResult {
@@ -217,6 +220,7 @@ async function createContexts(options: {
   includeSubdomains: boolean;
   pageTimeoutMs: number;
   proxyServer: string;
+  userAgent: string | null;
   engine: 'webkit' | 'chromium' | 'firefox';
 }): Promise<BrowserContext[]> {
   return Promise.all(
@@ -226,6 +230,7 @@ async function createContexts(options: {
         ignoreHTTPSErrors: false,
         serviceWorkers: 'block',
         proxy: { server: options.proxyServer },
+        ...(options.userAgent === null ? {} : { userAgent: options.userAgent }),
       });
       await installUntrustedPageNetworkGuards(context, options.engine);
       context.setDefaultTimeout(options.pageTimeoutMs);
@@ -255,9 +260,36 @@ async function createContexts(options: {
 }
 
 function isHttpFallbackCandidate(error: unknown): boolean {
+  if (
+    error instanceof SitepullError &&
+    (error.code === 'UPSTREAM_PROXY_INVALID' ||
+      error.code === 'UPSTREAM_PROXY_AUTH_REQUIRED' ||
+      error.code === 'UPSTREAM_PROXY_TLS_FAILED' ||
+      error.code === 'UPSTREAM_PROXY_CONNECT_FAILED')
+  ) {
+    return false;
+  }
   const message = error instanceof Error ? error.message : String(error);
   if (/blockedbyclient|ERR_BLOCKED_BY_CLIENT|PRIVATE_NETWORK_BLOCKED/iu.test(message)) return false;
   return /certificate|connection|ERR_CERT|ERR_CONNECTION|ERR_NAME_NOT_RESOLVED|ERR_SSL|ENOTFOUND|SSL|timeout|TLS/iu.test(
+    message,
+  );
+}
+
+function isProxyTransportFailure(error: unknown): boolean {
+  if (error instanceof SitepullError && typeof error.details?.proxyErrorCode === 'string') {
+    return true;
+  }
+  const messages: string[] = [];
+  const seen = new Set<Error>();
+  let current: unknown = error;
+  while (current instanceof Error && !seen.has(current) && seen.size < 8) {
+    seen.add(current);
+    messages.push(current.message);
+    current = current.cause;
+  }
+  const message = messages.length === 0 ? String(error) : messages.join('\n');
+  return /ERR_TUNNEL_CONNECTION_FAILED|ERR_PROXY_CONNECTION_FAILED|kCFErrorDomainCFNetwork error (?:306|310)|NS_ERROR_PROXY_CONNECTION_REFUSED|NS_ERROR_UNKNOWN_PROXY_HOST|proxy[^\n]*tunnel|tunnel[^\n]*proxy/iu.test(
     message,
   );
 }
@@ -269,8 +301,10 @@ async function resolveInferredStartUrl(options: {
   allowPrivateHosts: boolean;
   pageTimeoutMs: number;
   proxyServer: string;
+  userAgent: string | null;
   engine: 'webkit' | 'chromium' | 'firefox';
   signal?: AbortSignal;
+  upstreamErrorFor: (target: string, sinceMs: number) => SitepullError | undefined;
   onFallback: (error: unknown, httpUrl: string) => Promise<void>;
 }): Promise<string> {
   const candidates = [
@@ -291,6 +325,7 @@ async function resolveInferredStartUrl(options: {
       includeSubdomains: options.includeSubdomains,
       pageTimeoutMs: options.pageTimeoutMs,
       proxyServer: options.proxyServer,
+      userAgent: options.userAgent,
       engine: options.engine,
     });
     if (context === undefined) {
@@ -300,6 +335,7 @@ async function resolveInferredStartUrl(options: {
       });
     }
     const page = await context.newPage();
+    const attemptStartedAt = Date.now();
     try {
       await page.goto(candidate, {
         waitUntil: 'commit',
@@ -307,6 +343,8 @@ async function resolveInferredStartUrl(options: {
       });
       return canonicalizeUrl(page.url());
     } catch (error) {
+      const upstreamError = options.upstreamErrorFor(candidate, attemptStartedAt);
+      if (upstreamError !== undefined) throw upstreamError;
       if (index === 0 && isHttpFallbackCandidate(error)) {
         httpsError = error;
         continue;
@@ -432,7 +470,11 @@ export async function runCapture(
     networkProxy = await createNetworkPolicyProxy({
       allowPrivateHosts,
       connectTimeoutMs: config.pageTimeoutMs,
+      ...(options.proxyPool === undefined ? {} : { proxyPool: options.proxyPool }),
+      ...(options.signal === undefined ? {} : { signal: options.signal }),
     });
+    const activeNetworkProxy = networkProxy;
+    const openNetworkConnection = activeNetworkProxy.openConnection;
     if (input.allowHttpFallback === true && new URL(normalizedUrl).protocol === 'https:') {
       normalizedUrl = await resolveInferredStartUrl({
         browser,
@@ -441,8 +483,10 @@ export async function runCapture(
         allowPrivateHosts,
         pageTimeoutMs: config.pageTimeoutMs,
         proxyServer: networkProxy.serverUrl,
+        userAgent: config.userAgent,
         engine: config.engine,
         ...(options.signal === undefined ? {} : { signal: options.signal }),
+        upstreamErrorFor: (target, sinceMs) => activeNetworkProxy.upstreamErrorFor(target, sinceMs),
         onFallback: async (error, httpUrl) => {
           emitProgress(
             'launching-browser',
@@ -471,6 +515,7 @@ export async function runCapture(
       includeSubdomains: config.includeSubdomains,
       pageTimeoutMs: config.pageTimeoutMs,
       proxyServer: networkProxy.serverUrl,
+      userAgent: config.userAgent,
       engine: config.engine,
     });
     emitProgress('launching-browser', 'completed', `${config.engine} launched.`, normalizedUrl);
@@ -541,10 +586,16 @@ export async function runCapture(
               allowPrivateHosts,
               timeoutMs: config.pageTimeoutMs,
               ...(options.signal === undefined ? {} : { signal: options.signal }),
+              ...(options.proxyPool === undefined
+                ? {}
+                : { connectionFactory: openNetworkConnection }),
               headersForUrl: async (url) => {
                 const cookies = await context.cookies(url);
                 const cookie = cookies.map(({ name, value }) => `${name}=${value}`).join('; ');
-                return cookie === '' ? {} : { cookie };
+                return {
+                  ...(cookie === '' ? {} : { cookie }),
+                  ...(config.userAgent === null ? {} : { 'user-agent': config.userAgent }),
+                };
               },
             });
             response = opened.response;
@@ -646,6 +697,7 @@ export async function runCapture(
           const result = await captureWithPageRetries(
             async (attempt) => {
               const attemptBudget = resourceBudget.createScope();
+              const attemptStartedAt = Date.now();
               try {
                 if (attempt > 1) {
                   await rm(screenshotsDirectory, { recursive: true, force: true });
@@ -667,6 +719,13 @@ export async function runCapture(
                 return captured;
               } catch (error) {
                 attemptBudget.rollback();
+                const upstreamError = activeNetworkProxy.upstreamErrorFor(
+                  entry.url,
+                  attemptStartedAt,
+                );
+                if (upstreamError !== undefined && isProxyTransportFailure(error)) {
+                  throw upstreamError;
+                }
                 throw error;
               }
             },
@@ -1058,7 +1117,7 @@ export async function runCapture(
       hostname: new URL(normalizedUrl).hostname,
     };
     const metadata = SitepullMetadataSchema.parse({
-      schemaVersion: 1,
+      schemaVersion: 2,
       generator: { name: 'Sitepull', version: SITEPULL_VERSION },
       captureId: writer.captureId,
       source,
@@ -1125,7 +1184,7 @@ export async function runCapture(
       error: null,
     };
     let manifest = CaptureManifestSchema.parse({
-      schemaVersion: 1,
+      schemaVersion: 2,
       generatorVersion: SITEPULL_VERSION,
       captureId: writer.captureId,
       status: 'completed',

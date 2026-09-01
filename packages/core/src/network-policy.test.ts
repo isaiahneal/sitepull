@@ -1,4 +1,5 @@
 import { createServer } from 'node:http';
+import net from 'node:net';
 
 import { describe, expect, it } from 'vitest';
 
@@ -100,6 +101,67 @@ describe('validated streaming resource fetches', () => {
     expect(redirect.bodyUsed).toBe(true);
     expect(final.bodyUsed).toBe(false);
     await cancelResponseBody(final);
+  });
+
+  it('routes every production redirect hop through the supplied connection factory', async () => {
+    let observedUserAgent = '';
+    const server = createServer((request, response) => {
+      if (request.url === '/start.map') {
+        response.writeHead(302, { Location: `http://second.invalid:${port}/final.map` });
+        response.end();
+        return;
+      }
+      observedUserAgent = request.headers['user-agent'] ?? '';
+      response.end('routed source map');
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(0, '127.0.0.1', resolve);
+    });
+    const address = server.address();
+    if (address === null || typeof address === 'string') throw new Error('Missing test port.');
+    const port = address.port;
+    const routedHosts: string[] = [];
+
+    try {
+      const result = await fetchValidatedResource(`http://first.invalid:${port}/start.map`, {
+        allowPrivateHosts: true,
+        timeoutMs: 1_000,
+        lookupAddresses: () => Promise.resolve([{ address: '127.0.0.1', family: 4 }]),
+        connectionFactory: (target, targetPort, signal) =>
+          new Promise((resolve, reject) => {
+            routedHosts.push(target.hostname);
+            const socket = net.createConnection({ host: '127.0.0.1', port: targetPort });
+            const abort = (): void => {
+              socket.destroy();
+              reject(
+                signal?.reason instanceof Error
+                  ? signal.reason
+                  : new Error('The routed test connection was aborted.', {
+                      cause: signal?.reason,
+                    }),
+              );
+            };
+            socket.once('connect', () => {
+              signal?.removeEventListener('abort', abort);
+              resolve(socket);
+            });
+            socket.once('error', reject);
+            signal?.addEventListener('abort', abort, { once: true });
+          }),
+        headersForUrl: () => ({ 'user-agent': 'Sitepull-SourceMap-Test/1.0' }),
+      });
+      await expect(readBoundedResponseBody(result.response, 100)).resolves.toEqual(
+        Buffer.from('routed source map'),
+      );
+      expect(result.finalUrl).toBe(`http://second.invalid:${port}/final.map`);
+      expect(routedHosts).toEqual(['first.invalid', 'second.invalid']);
+      expect(observedUserAgent).toBe('Sitepull-SourceMap-Test/1.0');
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => (error ? reject(error) : resolve()));
+      });
+    }
   });
 
   it('blocks a redirect to loopback before requesting it and cancels the redirect body', async () => {
